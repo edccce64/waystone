@@ -1,5 +1,5 @@
 /**
- * Maintenance: audit ledger, supersedes, /seed and /dream pipelines, lifecycle hooks.
+ * Maintenance: audit ledger, supersedes, the /seed pipeline, lifecycle hooks.
  *
  * Split out of the single-file extension; import order below is the only
  * dependency order: memory-core <- search <- maintenance <- commands.
@@ -20,7 +20,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	_onBaseDirChange,
-	_resetVerifiedState,
 	AUDIT_DIR,
 	appendStamped,
 	buildMemoryContext,
@@ -33,10 +32,6 @@ import {
 	EXIT_SUMMARY_SYSTEM_PROMPT,
 	ensureDirs,
 	fileMtime,
-	forgetBlocks,
-	isReservedFileName,
-	KNOWLEDGE_FILE_MAX_CHARS,
-	localDateStr,
 	looksLikeSecret,
 	MEMORY_DIR,
 	MEMORY_FILE,
@@ -46,18 +41,13 @@ import {
 	parseScratchpad,
 	readFileSafe,
 	readJsonSidecar,
-	readVerifiedState,
 	SCRATCHPAD_FILE,
 	shortSessionId,
 	splitAuditBlocks,
-	TRANSCRIPTS_DIR,
 	todayStr,
 	truncateText,
-	WIKI_DIR,
 	withMemoryLock,
 	writeJsonSidecar,
-	writeRecoveryRecord,
-	writeVerifiedState,
 } from "./memory-core.js";
 import {
 	cancelQmdUpdate,
@@ -356,6 +346,8 @@ const AUDIT_WRITE_DEBOUNCE_MS = 2_000;
 const AUDIT_STALE_FOLD_HEAD = 160;
 /** Rough chars-per-token for English + code. Good enough for a cost ballpark. */
 export const AUDIT_CHARS_PER_TOKEN = 4;
+/** How many audit reports are kept on disk. */
+export const AUDIT_MAX_REPORT_FILES = 20;
 
 type StaleMode = "annotate" | "fold" | "off";
 
@@ -439,7 +431,6 @@ function projectMemorySection(cwd: string): string {
 export function _resetAuditState() {
 	ledgerCache = null;
 	ledgerCacheMtime = -1;
-	_resetVerifiedState();
 	ledgerDirty = false;
 	if (ledgerTimer) {
 		clearTimeout(ledgerTimer);
@@ -641,8 +632,7 @@ export function flushAuditLedger(): void {
  * Drop all recorded injections.
  *
  * Only the ledger and the generated reports are removed. The other files in
- * `.audit` hold live state: the supersede chain, the verification sidecar and
- * the pending seed and dream results.
+ * `.audit` hold live state: the supersede chain and the pending seed result.
  */
 export function resetAuditLedger(): void {
 	_resetAuditState();
@@ -658,6 +648,37 @@ export function resetAuditLedger(): void {
 		}
 	} catch {
 		// The directory may not exist.
+	}
+}
+
+/** Keep the newest `keep` files that match `prefix`, delete the rest. */
+export function pruneOldFiles(dir: string, prefix: string, keep: number): number {
+	try {
+		const names = fs
+			.readdirSync(dir)
+			.filter((name) => name.startsWith(prefix))
+			.map((name) => {
+				let mtime = 0;
+				try {
+					mtime = fs.statSync(path.join(dir, name)).mtimeMs;
+				} catch {
+					// Keep the file if it cannot be dated; it is not worth guessing.
+				}
+				return { name, mtime };
+			})
+			.sort((a, b) => b.mtime - a.mtime);
+		let removed = 0;
+		for (const old of names.slice(keep)) {
+			try {
+				fs.rmSync(path.join(dir, old.name), { force: true });
+				removed++;
+			} catch {
+				// Nothing to remove.
+			}
+		}
+		return removed;
+	} catch {
+		return 0;
 	}
 }
 
@@ -830,9 +851,8 @@ export function findConflictCandidates(rows: AuditRow[]): [AuditRow, AuditRow][]
 // ---------------------------------------------------------------------------
 // Background jobs (fork addition)
 //
-// /seed and /dream are one lifecycle: report a pending sidecar, apply it, or
-// start a run that outlives the command. Only the material, the prompt, the
-// answer schema and the apply step differ, so those stay with each job.
+// A command that reports a pending sidecar, applies it, or starts a run that
+// outlives the command. /seed is the one user of this layer.
 // ---------------------------------------------------------------------------
 
 /** What the shared lifecycle needs from one job. */
@@ -881,20 +901,6 @@ export function startDetachedJob<TResult>(job: SidecarJob<TResult>, body: () => 
 			job.inFlight = false;
 		}
 	})();
-}
-
-/** Write the sidecar, refresh search, and announce the finished run. */
-function publishJobResult<TResult>(
-	job: SidecarJob<TResult>,
-	ctx: ExtensionCommandContext,
-	result: TResult,
-	message: string,
-): void {
-	job.write(result);
-	scheduleQmdRefresh();
-	// Plain notify, not notifySafe: the run reports from a detached task, and a
-	// UI that has gone away should surface as a failed run, not as silence.
-	ctx.ui.notify(message, "info");
 }
 
 /** Refresh the qmd index in the background. A failure is not the turn's problem. */
@@ -1379,559 +1385,6 @@ export function commitSeedResult(ctx: ExtensionCommandContext, result: SeedResul
 		`Seeded ${result.candidates.length} entr${result.candidates.length === 1 ? "y" : "ies"} into ${where} (${result.skippedExisting} already known).`,
 		"info",
 	);
-}
-
-// ---------------------------------------------------------------------------
-// Dreaming (fork addition)
-//
-// Anthropic's agent-memory write-up describes "dreaming": a background pass
-// that revisits raw transcripts, corrects notes that no longer match the
-// evidence, merges duplicates, and keeps a wiki in shape. This is the same
-// idea, implemented conservatively: /dream gathers the raw material (long-term
-// notes, daily logs, session transcripts), asks the model for a concrete list
-// of edits, and writes nothing until the user applies the list.
-// ---------------------------------------------------------------------------
-
-export const DREAM_DEFAULT_DAYS = 14;
-const DREAM_MAX_ENTRIES = 40;
-const DREAM_MAX_TRANSCRIPT_CHARS = 20_000;
-const DREAM_MAX_DAILY_CHARS = 8_000;
-const DREAM_MAX_PROMPTS_PER_SESSION = 6;
-const DREAM_MAX_ANSWERS_PER_SESSION = 8;
-const DREAM_MAX_ERRORS_PER_SESSION = 6;
-/** How many exported session digests are kept on disk. */
-const DREAM_MAX_TRANSCRIPT_FILES = 200;
-/** How many audit reports are kept on disk. */
-export const AUDIT_MAX_REPORT_FILES = 20;
-
-const DREAM_SYSTEM_PROMPT = [
-	"You maintain the long-term memory of a coding agent.",
-	"You receive the current long-term notes plus raw evidence: session transcripts and daily logs.",
-	"Reply with ONLY a JSON array, no prose, no code fences.",
-	'Each element is one of: {"action":"verify","key":"<key>","status":"verified|unverified|pending","evidence":"<why>"}',
-	'{"action":"fix","key":"<key>","text":"<corrected note>"}',
-	'{"action":"add","text":"<new durable note>","category":"preference|decision|convention|failure|insight"}',
-	'{"action":"forget","key":"<key>","reason":"<why it is obsolete>"}',
-	'{"action":"merge","key":"<oldKey>","into":"<newKey>"}',
-	'{"action":"wiki","topic":"<slug>","body":"<markdown page>"}',
-	"Rules:",
-	"- Report a note as verified only when the evidence shows it.",
-	"- Do not repeat a note that already exists.",
-	"- Prefer fixing or forgetting an obsolete note over adding a second one.",
-	"- Keep at most 3 wiki pages, one per topic.",
-	"- Never invent facts that the evidence does not contain.",
-	"If nothing needs to change, return [].",
-].join("\n");
-
-interface DreamEntry {
-	key: string;
-	text: string;
-}
-
-interface DreamAction {
-	action: string;
-	key?: string;
-	text?: string;
-	topic?: string;
-	body?: string;
-	status?: string;
-	evidence?: string;
-	reason?: string;
-	category?: string;
-	into?: string;
-}
-
-export interface DreamResult {
-	createdAt: string;
-	days: number;
-	entriesScanned: number;
-	transcriptsScanned: number;
-	actions: DreamAction[];
-	notes: string[];
-}
-
-export function dreamResultFile(): string {
-	return path.join(AUDIT_DIR, "dream-result.json");
-}
-
-/** A result without an action list is a partial write, not a result. */
-function asDreamResult(value: unknown): DreamResult | null {
-	if (!value || !Array.isArray((value as Partial<DreamResult>).actions)) return null;
-	return value as DreamResult;
-}
-
-function readDreamResult(): DreamResult | null {
-	return readJsonSidecar(dreamResultFile(), asDreamResult);
-}
-
-function writeDreamResult(result: DreamResult): void {
-	// Atomic like every other sidecar: a crash mid-write must not leave a
-	// truncated result that /dream apply then refuses to read.
-	writeJsonSidecar(dreamResultFile(), result);
-}
-
-/** Lifecycle, sidecar and messages of /dream. The pipeline itself is below. */
-export const dreamJob: SidecarJob<DreamResult> = {
-	read: readDreamResult,
-	write: writeDreamResult,
-	describe: (result) => {
-		const preview = result.actions
-			.slice(0, 30)
-			.map((a) => `${a.action} ${a.key ?? a.topic ?? ""} ${(a.text ?? a.reason ?? a.evidence ?? "").slice(0, 90)}`)
-			.join("\n");
-		return `Dream ready: ${result.actions.length} action(s) from ${result.entriesScanned} entries and ${result.transcriptsScanned} transcript(s).\n${preview}\nRun /dream apply to write them.`;
-	},
-	emptyMessage: "No pending dream result.",
-	runningMessage: "Dreaming is running in the background. Check /dream status again.",
-	noResultMessage: "No pending dream result. Run /dream first.",
-	inFlight: false,
-};
-
-const DREAM_ERROR_MARKERS = /error|failed|failure|ENOENT|ECONNRESET|ETIMEDOUT|exception|not found|404|500/i;
-
-/** Compact evidence from one session transcript: prompts, answers, failures. */
-export function buildSessionDigest(raw: string): string {
-	const lines: string[] = [];
-	let prompts = 0;
-	let answers = 0;
-	let errors = 0;
-
-	for (const line of raw.split("\n")) {
-		if (!line.trim()) continue;
-		let entry: {
-			type?: string;
-			message?: { role?: string; content?: unknown };
-		};
-		try {
-			entry = JSON.parse(line);
-		} catch {
-			continue;
-		}
-		if (entry?.type !== "message") continue;
-		const role = entry.message?.role;
-		const content = entry.message?.content;
-		if (role === "user") {
-			if (prompts >= DREAM_MAX_PROMPTS_PER_SESSION) continue;
-			const text = extractUserText(content);
-			if (!text) continue;
-			// A line that carries a credential never reaches the digest file.
-			if (looksLikeSecret(text)) continue;
-			prompts++;
-			lines.push(`user: ${text.replace(/\s+/g, " ").slice(0, 240)}`);
-		} else if (role === "assistant") {
-			if (answers >= DREAM_MAX_ANSWERS_PER_SESSION) continue;
-			const text = extractUserText(content);
-			if (!text) continue;
-			if (looksLikeSecret(text)) continue;
-			answers++;
-			lines.push(`assistant: ${text.replace(/\s+/g, " ").slice(0, 300)}`);
-		} else if (role === "toolResult") {
-			if (errors >= DREAM_MAX_ERRORS_PER_SESSION) continue;
-			const text = extractUserText(content);
-			if (!text || !DREAM_ERROR_MARKERS.test(text)) continue;
-			if (looksLikeSecret(text)) continue;
-			errors++;
-			lines.push(`error: ${text.replace(/\s+/g, " ").slice(0, 200)}`);
-		}
-	}
-
-	return lines.join("\n");
-}
-
-interface DreamTranscript {
-	date: string;
-	session: string;
-	project: string;
-	digest: string;
-}
-
-/** Session transcripts from the last `days` days, newest first. */
-export function collectDreamTranscripts(days: number): DreamTranscript[] {
-	const out: DreamTranscript[] = [];
-	walkSessionFiles(days, ({ project, file, day, raw }) => {
-		const digest = buildSessionDigest(raw);
-		if (!digest.trim()) return;
-		out.push({ date: day, session: path.basename(file).replace(/\.jsonl$/, ""), project, digest });
-	});
-	out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-	return out;
-}
-
-/** Long-term entries, keyed by the same hash the audit report shows. */
-export function collectDreamEntries(): DreamEntry[] {
-	const content = readFileSafe(MEMORY_FILE);
-	if (!content?.trim()) return [];
-	return splitAuditBlocks(content, "MEMORY.md")
-		.filter((block) => block.body.trim().length > 0)
-		.slice(0, DREAM_MAX_ENTRIES)
-		.map((block) => ({
-			key: block.key.slice(0, 8),
-			text: block.body.replace(/\s+/g, " ").slice(0, 400),
-		}));
-}
-
-/** Daily logs from the last `days` days, newest first. */
-function collectDreamDaily(days: number): string {
-	const parts: string[] = [];
-	for (let i = 0; i < days; i++) {
-		const d = new Date();
-		d.setDate(d.getDate() - i);
-		const file = dailyPath(localDateStr(d));
-		const content = readFileSafe(file);
-		if (!content?.trim()) continue;
-		parts.push(`### ${localDateStr(d)}\n${content.trim()}`);
-	}
-	const joined = parts.join("\n\n");
-	return joined.length > DREAM_MAX_DAILY_CHARS ? joined.slice(0, DREAM_MAX_DAILY_CHARS) : joined;
-}
-
-function buildDreamPrompt(entries: DreamEntry[], transcripts: DreamTranscript[], daily: string): string {
-	const entryLines = entries.map((e) => `[${e.key}] ${e.text}`).join("\n");
-	const transcriptText = transcripts
-		.map((t) => `### ${t.date} ${t.project} ${t.session}\n${t.digest}`)
-		.join("\n\n")
-		.slice(0, DREAM_MAX_TRANSCRIPT_CHARS);
-	const dailyText = daily ? `\n\nDaily logs:\n${daily}` : "";
-	return `Current long-term notes (key in brackets):\n${entryLines}\n\nSession evidence:\n${transcriptText}${dailyText}\n\nReturn the JSON array of edits.`;
-}
-
-const DREAM_CATEGORIES = new Set([
-	"preference",
-	"decision",
-	"convention",
-	"failure",
-	"insight",
-	"lesson",
-	"issue",
-	"project",
-]);
-
-function parseDreamActions(raw: string): DreamAction[] {
-	return parseJsonArray<DreamAction>(raw, (entry) =>
-		entry && typeof entry === "object" && typeof (entry as DreamAction).action === "string"
-			? (entry as DreamAction)
-			: null,
-	);
-}
-
-async function runDreamModel(
-	ctx: ExtensionCommandContext,
-	entries: DreamEntry[],
-	transcripts: DreamTranscript[],
-	daily: string,
-): Promise<{ actions: DreamAction[]; error?: string }> {
-	const { text, error } = await callModelOnce(ctx, DREAM_SYSTEM_PROMPT, buildDreamPrompt(entries, transcripts, daily));
-	if (error) return { actions: [], error };
-	return { actions: parseDreamActions(text) };
-}
-
-/** Replace the block whose audit key matches, keeping the stamp comment. */
-export function replaceBlockByKey(
-	content: string,
-	key: string,
-	newText: string,
-): { content: string; replaced: boolean } {
-	const blocks = splitAuditBlocks(content, "MEMORY.md");
-	const target = blocks.find((block) => block.key.startsWith(key));
-	if (!target) return { content, replaced: false };
-	const index = blocks.indexOf(target);
-	const rebuilt = [
-		...blocks.slice(0, index),
-		{ ...target, body: newText, full: target.stamp ? `${target.stamp}\n${newText}` : newText },
-		...blocks.slice(index + 1),
-	];
-	return { content: `${rebuilt.map((block) => block.full).join("\n\n")}\n`, replaced: true };
-}
-
-/** Merge a new body into a wiki page, keeping the existing content. */
-export function mergeWikiPage(existing: string, body: string): string {
-	if (!existing.trim()) return `${body.trim()}\n`;
-	const base = existing.trim();
-	const additions = body
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.filter((line) => line.length > 0)
-		.filter((line) => !base.includes(line));
-	if (additions.length === 0) return `${base}\n`;
-	return `${base}\n\n${additions.join("\n")}\n`;
-}
-
-function slugifyTopic(topic: string): string {
-	const slug =
-		topic
-			.toLowerCase()
-			.replace(/[^a-z0-9一-龥]+/g, "-")
-			.replace(/^-+|-+$/g, "")
-			.slice(0, 60) || "topic";
-	// A name like "con" cannot be a file on Windows.
-	return isReservedFileName(slug) ? `note-${slug}` : slug;
-}
-
-export interface DreamApplyReport {
-	verified: number;
-	fixed: number;
-	added: number;
-	forgotten: number;
-	merged: number;
-	wiki: number;
-	skipped: string[];
-}
-
-export function applyDreamActions(ctx: ExtensionCommandContext, result: DreamResult): DreamApplyReport {
-	// The whole read, change and write back runs under the lock, so a
-	// concurrent session cannot write the same file in between.
-	return withMemoryLock(() => applyDreamActionsLocked(ctx, result));
-}
-
-function applyDreamActionsLocked(ctx: ExtensionCommandContext, result: DreamResult): DreamApplyReport {
-	const report: DreamApplyReport = {
-		verified: 0,
-		fixed: 0,
-		added: 0,
-		forgotten: 0,
-		merged: 0,
-		wiki: 0,
-		skipped: [],
-	};
-	const ts = nowTimestamp();
-	const sid = shortSessionId(ctx.sessionManager.getSessionId());
-	let content = readFileSafe(MEMORY_FILE) ?? "";
-	const verifiedState = { ...readVerifiedState() };
-	// Nothing is written while the actions are processed. The wiki pages and
-	// the recovery records are collected and written at the end, so a failure
-	// in the middle cannot leave a half-applied state behind.
-	const pendingWiki: { file: string; body: string }[] = [];
-	const pendingRecovery: string[][] = [];
-
-	for (const action of result.actions) {
-		switch (action.action) {
-			case "verify": {
-				if (!action.key) break;
-				const block = splitAuditBlocks(content, "MEMORY.md").find((b) => b.key.startsWith(action.key as string));
-				if (!block) {
-					report.skipped.push(`verify ${action.key}: entry not found`);
-					break;
-				}
-				const status = (action.status ?? "pending").toLowerCase();
-				verifiedState[block.key] = {
-					status: status === "verified" ? "verified" : status === "unverified" ? "unverified" : "pending",
-					evidence: action.evidence?.slice(0, 300),
-					at: new Date().toISOString(),
-				};
-				report.verified++;
-				break;
-			}
-			case "fix": {
-				if (!action.key || !action.text?.trim()) break;
-				if (looksLikeSecret(action.text)) {
-					report.skipped.push(`fix ${action.key}: text carries a credential`);
-					break;
-				}
-				const updated = replaceBlockByKey(content, action.key, action.text.trim());
-				if (!updated.replaced) {
-					report.skipped.push(`fix ${action.key}: entry not found`);
-					break;
-				}
-				content = updated.content;
-				report.fixed++;
-				break;
-			}
-			case "add": {
-				if (!action.text?.trim()) break;
-				if (looksLikeSecret(action.text)) {
-					report.skipped.push("add: text carries a credential");
-					break;
-				}
-				const requested = (action.category ?? "insight").toLowerCase();
-				const category = DREAM_CATEGORIES.has(requested) ? requested : "insight";
-				const stamp = `<!-- ${ts} [${sid}] -->`;
-				const separator = content.trim() ? "\n\n" : "";
-				content = `${content.trimEnd()}${separator}${stamp}\n#${category} ${action.text.trim()}\n`;
-				report.added++;
-				break;
-			}
-			case "forget": {
-				if (!action.key) break;
-				const blocks = splitAuditBlocks(content, "MEMORY.md");
-				const target = blocks.find((b) => b.key.startsWith(action.key as string));
-				if (!target) {
-					report.skipped.push(`forget ${action.key}: entry not found`);
-					break;
-				}
-				const needle = target.body.split("\n")[0]?.trim();
-				if (!needle) break;
-				const removed = forgetBlocks(content, needle);
-				if (removed.removed.length > 0) {
-					content = removed.content;
-					pendingRecovery.push(removed.removed);
-					report.forgotten++;
-				}
-				break;
-			}
-			case "merge": {
-				if (!action.key) break;
-				const blocks = splitAuditBlocks(content, "MEMORY.md");
-				const oldBlock = blocks.find((b) => b.key.startsWith(action.key as string));
-				if (!oldBlock) {
-					report.skipped.push(`merge ${action.key}: entry not found`);
-					break;
-				}
-				const intoKey = action.into?.trim();
-				if (!intoKey) {
-					report.skipped.push(`merge ${action.key}: no target entry given`);
-					break;
-				}
-				const intoBlock = blocks.find((b) => b.key.startsWith(intoKey));
-				if (!intoBlock) {
-					report.skipped.push(`merge ${action.key}: target entry ${intoKey} not found`);
-					break;
-				}
-				if (intoBlock.key === oldBlock.key) {
-					report.skipped.push(`merge ${action.key}: target is the same entry`);
-					break;
-				}
-				// The old body moves into the target entry, then the old entry goes.
-				const mergedBody = intoBlock.body.includes(oldBlock.body)
-					? intoBlock.body
-					: `${intoBlock.body}\n${oldBlock.body}`.trim();
-				const rebuilt = blocks
-					.filter((block) => block.key !== oldBlock.key)
-					.map((block) =>
-						block.key === intoBlock.key
-							? {
-									...block,
-									body: mergedBody,
-									full: block.stamp ? `${block.stamp}\n${mergedBody}` : mergedBody,
-								}
-							: block,
-					);
-				content = `${rebuilt.map((block) => block.full).join("\n\n")}\n`;
-				pendingRecovery.push([oldBlock.full]);
-				report.merged++;
-				break;
-			}
-			case "wiki": {
-				const topic = action.topic?.trim();
-				if (!topic || !action.body?.trim()) break;
-				if (looksLikeSecret(action.body)) {
-					report.skipped.push(`wiki ${topic}: body carries a credential`);
-					break;
-				}
-				if (action.body.trim().length > KNOWLEDGE_FILE_MAX_CHARS) {
-					report.skipped.push(`wiki ${topic}: body is longer than ${KNOWLEDGE_FILE_MAX_CHARS} characters`);
-					break;
-				}
-				fs.mkdirSync(WIKI_DIR, { recursive: true });
-				const file = path.join(WIKI_DIR, `${slugifyTopic(topic)}.md`);
-				const existing = readFileSafe(file) ?? "";
-				pendingWiki.push({ file, body: mergeWikiPage(existing, action.body) });
-				report.wiki++;
-				break;
-			}
-			default:
-				report.skipped.push(`unknown action ${action.action}`);
-		}
-	}
-
-	if (content !== (readFileSafe(MEMORY_FILE) ?? "")) {
-		fs.writeFileSync(MEMORY_FILE, content, "utf-8");
-	}
-	for (const page of pendingWiki) {
-		fs.writeFileSync(page.file, page.body, "utf-8");
-	}
-	for (const removed of pendingRecovery) {
-		writeRecoveryRecord("long_term", undefined, removed);
-	}
-	writeVerifiedState(verifiedState);
-	return report;
-}
-
-/** Keep the newest `keep` files that match `prefix`, delete the rest. */
-export function pruneOldFiles(dir: string, prefix: string, keep: number): number {
-	try {
-		const names = fs
-			.readdirSync(dir)
-			.filter((name) => name.startsWith(prefix))
-			.map((name) => {
-				let mtime = 0;
-				try {
-					mtime = fs.statSync(path.join(dir, name)).mtimeMs;
-				} catch {
-					// Keep the file if it cannot be dated; it is not worth guessing.
-				}
-				return { name, mtime };
-			})
-			.sort((a, b) => b.mtime - a.mtime);
-		let removed = 0;
-		for (const old of names.slice(keep)) {
-			try {
-				fs.rmSync(path.join(dir, old.name), { force: true });
-				removed++;
-			} catch {
-				// Nothing to remove.
-			}
-		}
-		return removed;
-	} catch {
-		return 0;
-	}
-}
-
-/** Write the session digests so qmd can index the raw evidence. */
-function exportTranscripts(transcripts: DreamTranscript[]): number {
-	fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
-	let written = 0;
-	for (const t of transcripts) {
-		// Second gate: a digest that still holds a credential is not written.
-		if (looksLikeSecret(t.digest)) continue;
-		const file = path.join(TRANSCRIPTS_DIR, `${t.date}-${t.session}.md`);
-		const body = `# ${t.date} ${t.project} ${t.session}\n\n${t.digest}\n`;
-		if (readFileSafe(file) === body) continue;
-		fs.writeFileSync(file, body, "utf-8");
-		written++;
-	}
-	// The digests are search evidence, not an archive. Old ones are dropped.
-	pruneOldFiles(TRANSCRIPTS_DIR, "", DREAM_MAX_TRANSCRIPT_FILES);
-	return written;
-}
-
-export async function dreamInBackground(ctx: ExtensionCommandContext, days: number): Promise<void> {
-	try {
-		const entries = collectDreamEntries();
-		const transcripts = collectDreamTranscripts(days);
-		const daily = collectDreamDaily(days);
-
-		if (entries.length === 0 && transcripts.length === 0) {
-			ctx.ui.notify(
-				`Nothing to dream about: no long-term entries and no transcripts in the last ${days} day(s).`,
-				"warning",
-			);
-			return;
-		}
-
-		// Export the digests first: they are the evidence the model checks
-		// against, and they make the raw sessions searchable through qmd.
-		const exported = exportTranscripts(transcripts);
-
-		const { actions, error } = await runDreamModel(ctx, entries, transcripts, daily);
-		const result: DreamResult = {
-			createdAt: new Date().toISOString(),
-			days,
-			entriesScanned: entries.length,
-			transcriptsScanned: transcripts.length,
-			actions: actions ?? [],
-			notes: exported > 0 ? [`${exported} transcript digest(s) exported to transcripts/`] : [],
-		};
-		if (error) result.notes.push(`model error: ${error}`);
-		publishJobResult(
-			dreamJob,
-			ctx,
-			result,
-			`Dream done: ${result.actions.length} action(s) from ${entries.length} entries and ${transcripts.length} transcript(s).\nRun /dream apply to write them, /dream status for all.`,
-		);
-	} catch (err) {
-		ctx.ui.notify(`Dream failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
-	}
 }
 
 // --- injection processing --------------------------------------------------

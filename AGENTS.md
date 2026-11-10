@@ -5,7 +5,7 @@
 - `index.ts`: the entry point. It only wires the modules together; `pi.extensions` points here.
 - `memory-core.ts`: paths, file I/O, the write lock, JSON sidecars, verification status, and the injected-context builder
 - `search.ts`: qmd discovery, collection setup, retrieval
-- `maintenance.ts`: audit ledger, supersedes, `/seed` and `/dream` pipelines, lifecycle hooks
+- `maintenance.ts`: audit ledger, supersedes, the `/seed` pipeline, lifecycle hooks
 - `commands.ts`: the slash commands and the tools
 - `test/e2e.ts`: end-to-end tests that invoke `pi` as a subprocess
 - `test/perf.check.ts`: prints timings for the hot paths. Not part of `npm run test:checks` or CI

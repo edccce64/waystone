@@ -11,21 +11,13 @@ follows [Semantic Versioning](https://semver.org/).
 - `test/perf.check.ts`: prints the timings of the hot paths (context
   building, the audit pass, qmd search p95) with a fixed fixture. It sets no
   thresholds and is not part of `npm run test:checks` or CI.
-- `/dream`: consolidates long-term memory against the raw session evidence.
-  It collects the long-term entries, the daily logs and the session
-  transcripts, exports a compact digest of every session into `transcripts/`,
-  and asks the model for a concrete list of edits (`verify`, `fix`, `add`,
-  `forget`, `merge`, `wiki`). The list lands in `.audit/dream-result.json`;
-  `/dream apply` is the only step that writes to memory. Forgotten entries
-  still get a recovery record.
 - Knowledge index: `topics/<name>.md` and `wiki/<name>.md` hold the bodies,
   and the injected context carries one line per file. `memory_read` lists or
   reads them with the new `wiki`, `topics` and `transcripts` targets.
   `memory_write` gained the `topic` and `wiki` targets.
 - Verification status: entries can be tagged `#已验证` / `#未验证` /
   `#待验证` (also `#verified`, `#unverified`, `#pending`). The injected layer
-  puts explicitly unverified entries last. `/dream` records its verdicts in
-  `.audit/verified.json` and leaves the markdown untouched.
+  puts explicitly unverified entries last.
 - `PI_MEMORY_QMD_COLLECTION` names the qmd collection this extension
   searches. It defaults to `pi-memory`, the upstream name, so an existing
   setup keeps working. Change it when this extension runs next to another
@@ -33,14 +25,9 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- `/dream` is experimental. The command is only registered when
-  `PI_MEMORY_EXPERIMENTAL` is `on` (`1` and `true` also work); without it the
-  extension registers `/audit`, `/seed` and `/supersede`. The `/dream` code and
-  its background run are unchanged, and the command appears as soon as the
-  switch is set.
 - The extension is split across five modules: `memory-core.ts` (paths, files,
   locks, sidecars, verification, context assembly), `search.ts` (qmd),
-  `maintenance.ts` (audit, supersede, `/seed`, `/dream`, lifecycle hooks),
+  `maintenance.ts` (audit ledger, supersede, `/seed`, lifecycle hooks),
   `commands.ts` (commands and tools) and `index.ts` (wiring only). The import
   order is one-way, and `pi.extensions` still points at `./index.ts`, so
   installing is unchanged. Command arguments, messages and `.audit` formats
@@ -55,6 +42,12 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- `/dream`. The command, its background pipeline, the session-digest export,
+  the `.audit/dream-result.json` sidecar with its apply step, and the
+  verification sidecar the apply step wrote are gone. Verification tags still
+  order the injected context, but only the tags written in the markdown count.
+  Existing `transcripts/` and `.audit/verified.json` files on disk are left
+  alone.
 - Correction capture. Detecting a correction in the raw prompt, appending it
   to the daily log, and injecting a matching system-prompt block are gone,
   together with the environment switch that enabled them. In practice it fired
@@ -76,55 +69,30 @@ follows [Semantic Versioning](https://semver.org/).
   entry. It is still on disk, only retired.
 - The knowledge index and the retrieved snippets are no longer counted as
   ledger rows without a file entry.
-- The ledger, the supersede chain and the verification sidecar are re-read
-  when the file on disk changes. Another session's change is now visible
-  without a restart.
-- `/dream apply` writes nothing until every action has been processed. A
-  failure in the middle can no longer leave a wiki page written and the
-  long-term file untouched.
-- `/dream` collects its material in the background. Reading every session
-  file of the last days took longer than the command limit allows.
+- The ledger and the supersede chain are re-read when the file on disk
+  changes. Another session's change is now visible without a restart.
 - A session file is read up to 8 MB. A bigger file is read in part.
 - A wiki page or topic note cannot be named `con`, `nul`, `com1` and the
   other names Windows refuses.
-- The verification sidecar is parsed once and kept in memory. Every
-  injection read the file again.
 - Every memory write now runs under a lock. Two sessions that write at the
   same time used to overwrite each other, because each one read the file,
   changed it and wrote it back.
-- `verified.json` and `supersedes.json` are written through a temporary file
+- `supersedes.json` is written through a temporary file
   and a rename. A crash in the middle of a write used to leave half a file,
   which the reader silently treated as an empty state.
 - Every sidecar now shares one reader and one atomic writer, including the
-  `/dream` and `/seed` result files. A crash in the middle of a write can no
+  `/seed` result file. A crash in the middle of a write can no
   longer leave a truncated result that the next command refuses to read.
 - `/seed apply` no longer writes into the repository that happens to be open.
   A project run belongs to the repository it was mined in, and the run is
   refused elsewhere.
 - `/seed apply` refuses to run while the background extraction is still
   running, and an applied run cannot be revived by a later batch.
-- The exported session digests and the audit reports are pruned. The digests
-  are search evidence, not an archive.
+- The audit reports are pruned. Reports are diagnostics, not an archive.
 - A wiki page or topic note cannot grow past 20 000 characters.
-- The verification sidecar now reaches the injected order. `/dream verify`
-  stored its verdict under the key of the whole stamped block, while the
-  injection looked it up under the key of the body, so the two never matched
-  and every entry kept its `pending` rank.
-- `/dream`'s `merge` action now merges. It only deleted the old entry and
-  ignored the `into` field, so the body of the old entry was lost. The old
-  body now moves into the target entry and the old entry is retired with a
-  recovery record.
 - `/audit reset` no longer deletes the whole `.audit` directory. It clears the
-  ledger and the generated reports and keeps the supersede chain, the
-  verification sidecar and the pending `/seed` and `/dream` results.
-- A correction that carries a credential is no longer captured. It used to be
-  injected into the system prompt and offered to the model as a memory to
-  write, while only the write to disk was blocked.
-- The session digests that `/dream` exports no longer contain lines with a
-  credential, and `/seed` no longer sends such prompts to the model. The
-  filtering now happens before the model call, as the README claims.
-- `/dream`'s `add`, `fix` and `wiki` actions refuse text that carries a
-  credential, and `add` only accepts a known category.
+  ledger and the generated reports and keeps the supersede chain and the
+  pending `/seed` result.
 - The project tier now counts towards the overall context budget. It used to
   be injected on top of the full budget, so the injection could reach about
   19 000 characters instead of 16 000.

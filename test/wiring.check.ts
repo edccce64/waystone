@@ -94,17 +94,6 @@ await check("registers three commands by default", () => {
 	assert.deepEqual([...registered.keys()].sort(), ["audit", "seed", "supersede"]);
 });
 
-await check("registers /dream only with PI_MEMORY_EXPERIMENTAL", () => {
-	process.env.PI_MEMORY_EXPERIMENTAL = "on";
-	try {
-		const registered = commandsFromFreshRegistration();
-		assert.deepEqual([...registered.keys()].sort(), ["audit", "dream", "seed", "supersede"]);
-		assert.ok((registered.get("dream")?.description ?? "").length > 10, "/dream needs a description");
-	} finally {
-		delete process.env.PI_MEMORY_EXPERIMENTAL;
-	}
-});
-
 await check("keeps every upstream memory tool", () => {
 	for (const tool of [
 		"memory_write",
@@ -172,7 +161,6 @@ await check("/audit reset clears the ledger and the reports", async () => {
 	const auditDir = path.join(memoryDir, ".audit");
 	// State that must survive the reset.
 	fs.writeFileSync(path.join(auditDir, "supersedes.json"), '{"a":"b"}', "utf-8");
-	fs.writeFileSync(path.join(auditDir, "verified.json"), '{"c":{"status":"verified"}}', "utf-8");
 	const ctx = { cwd: tmpRoot, ui: { notify: () => {} } };
 	await commands.get("audit")?.handler("reset", ctx);
 	assert.ok(!fs.existsSync(path.join(auditDir, "ledger.json")), "the ledger should be gone");
@@ -182,7 +170,6 @@ await check("/audit reset clears the ledger and the reports", async () => {
 		"the reports should be gone",
 	);
 	assert.ok(fs.existsSync(path.join(auditDir, "supersedes.json")), "the supersede chain must survive");
-	assert.ok(fs.existsSync(path.join(auditDir, "verified.json")), "the verification state must survive");
 });
 
 await check("session_shutdown flushes without throwing", async () => {

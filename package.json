@@ -46,7 +46,7 @@
 		"test": "bun test test/unit.test.ts",
 		"test:e2e": "npx tsx test/e2e.ts",
 		"test:eval": "bun test/eval-recall.ts",
-		"test:checks": "npx tsx test/audit.check.ts && npx tsx test/dream.check.ts && npx tsx test/fixes.check.ts && npx tsx test/project.check.ts && npx tsx test/seed.check.ts && npx tsx test/wiring.check.ts"
+		"test:checks": "npx tsx test/audit.check.ts && npx tsx test/fixes.check.ts && npx tsx test/project.check.ts && npx tsx test/seed.check.ts && npx tsx test/wiring.check.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.0",

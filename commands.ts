@@ -9,18 +9,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { AuditRow, DreamResult, SeedResult, SeedTarget } from "./maintenance.js";
+import type { AuditRow, SeedResult, SeedTarget } from "./maintenance.js";
 import {
 	AUDIT_MAX_REPORT_FILES,
 	activeSupersedes,
-	applyDreamActions,
 	clearSidecar,
 	collectSeedMessages,
 	commitSeedResult,
-	DREAM_DEFAULT_DAYS,
-	dreamInBackground,
-	dreamJob,
-	dreamResultFile,
 	extractAllBatches,
 	findConflictCandidates,
 	flushAuditLedger,
@@ -41,7 +36,6 @@ import {
 	resetAuditLedger,
 	SEED_BATCH_SIZE,
 	SEED_DEFAULT_DAYS,
-	scheduleQmdRefresh,
 	seedAppliedFile,
 	seedJob,
 	seedResultFile,
@@ -210,50 +204,6 @@ async function runSeed(args: string, ctx: ExtensionCommandContext): Promise<void
 	// the command request.
 	startDetachedJob(seedJob, () => extractAllBatches(ctx, messages, result));
 }
-
-async function runDream(args: string, ctx: ExtensionCommandContext): Promise<void> {
-	const trimmed = args.trim();
-	const sub = trimmed.split(/\s+/)[0]?.toLowerCase() ?? "";
-
-	if (handleJobSubcommand(dreamJob, ctx, sub, (result) => applyDreamResult(ctx, result))) return;
-
-	if (dreamJob.inFlight) {
-		ctx.ui.notify("A dream run is already in progress. /dream status to check on it.", "info");
-		return;
-	}
-
-	const days = parseDaysArg(trimmed, DREAM_DEFAULT_DAYS);
-
-	// Collecting the material reads every session file of the last days. That
-	// takes longer than the command limit allows, so it runs detached, the
-	// same way /seed does.
-	ctx.ui.notify(
-		`pi-memory /dream: collecting the last ${days} day(s) in the background. This returns now; you will be notified when the result is ready.`,
-		"info",
-	);
-	startDetachedJob(dreamJob, () => dreamInBackground(ctx, days));
-}
-
-/** `/dream apply`: write the pending actions, then drop the sidecar. */
-function applyDreamResult(ctx: ExtensionCommandContext, result: DreamResult): void {
-	const report = applyDreamActions(ctx, result);
-	clearSidecar(dreamResultFile());
-	markSnapshotDirty();
-	scheduleQmdRefresh();
-	ctx.ui.notify(
-		`Dream applied: ${report.verified} verified, ${report.fixed} fixed, ${report.added} added, ${report.forgotten} forgotten, ${report.merged} merged, ${report.wiki} wiki page(s).${
-			report.skipped.length ? ` Skipped: ${report.skipped.join("; ")}` : ""
-		}`,
-		"info",
-	);
-}
-
-/**
- * The detached half of /dream: gather the evidence, ask the model, publish.
- *
- * Kept as a function rather than an inline closure so `runDream` stays a
- * straight line of subcommand handling.
- */
 
 // --- report ----------------------------------------------------------------
 
@@ -516,16 +466,7 @@ function writeAuditReport(markdown: string): string {
 	return file;
 }
 
-/**
- * Experimental commands, off unless the user opts in. Same parsing as the other
- * switches: trim, lowercase, and only on/1/true count.
- */
-function experimentalEnabled(): boolean {
-	const value = (process.env.PI_MEMORY_EXPERIMENTAL ?? "").trim().toLowerCase();
-	return value === "on" || value === "1" || value === "true";
-}
-
-/** /audit, /seed and /supersede, plus /dream when experimental commands are on. */
+/** /audit, /seed and /supersede. */
 export function registerCommands(pi: ExtensionAPI) {
 	pi.registerCommand("audit", {
 		description:
@@ -556,18 +497,6 @@ export function registerCommands(pi: ExtensionAPI) {
 			await runSeed(args ?? "", ctx);
 		},
 	});
-
-	// --- /dream: consolidate memory against the raw session evidence ---
-	// Experimental: the command is only registered when the user opts in.
-	if (experimentalEnabled()) {
-		pi.registerCommand("dream", {
-			description:
-				"Consolidate memory against raw session transcripts: verify notes, fix wrong ones, merge duplicates, build wiki pages (runs in the background). Usage: /dream [days] | /dream apply | /dream status",
-			handler: async (args, ctx) => {
-				await runDream(args ?? "", ctx);
-			},
-		});
-	}
 
 	// --- /supersede: retire a memory a newer one replaces ---
 	pi.registerCommand("supersede", {

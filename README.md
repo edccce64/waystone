@@ -109,8 +109,8 @@ If the first search doesn't find what you need, try rephrasing or switching mode
     2026-02-14.md
     ...
   topics/<name>.md        # Topic notes: the body of one subject
-  wiki/<name>.md          # Wiki pages maintained by /dream
-  transcripts/            # Session digests exported by /dream
+  wiki/<name>.md          # Wiki pages: linked knowledge the agent maintains
+  transcripts/            # Session digests from earlier versions (still readable)
   recovery/
     <recovery-id>.json    # Complete payload and restore state for a memory_forget deletion
 ```
@@ -220,7 +220,7 @@ The layer does not change the on-disk format. Entries are keyed by a hash of the
 | Command | What it does |
 |---------|--------------|
 | `/audit` | Writes a health report and notifies a one-line summary |
-| `/audit reset` | Clears the ledger and the reports. The supersede chain, the verification sidecar and the pending `/seed` and `/dream` results stay. |
+| `/audit reset` | Clears the ledger and the reports. The supersede chain and the pending `/seed` result stay. |
 
 Reports land in `~/.pi/agent/memory/.audit/report-<timestamp>.md`. The newest 20 reports are kept, the rest are deleted. Findings are ranked: entries pointing at deleted files first, then entries written but never injected, then duplicates across files, then ledger rows whose text is no longer on disk.
 
@@ -322,56 +322,6 @@ to run when another repository is open, and the entries land in the repository
 the run started in. `/seed apply` also refuses while the extraction is still
 running, and an applied run cannot be revived by a later batch.
 
-## Dreaming (fork addition)
-
-Anthropic's *The components of agent memory* describes "dreaming": a background
-pass that revisits raw transcripts, corrects notes that no longer match the
-evidence, merges duplicates, and keeps a wiki in shape. `/dream` implements the
-same idea, conservatively.
-
-`/dream` is experimental: it is only registered when `PI_MEMORY_EXPERIMENTAL`
-is `on` (`1` / `true` also work). Without it, `/dream` does not exist and the
-other three commands are unaffected.
-
-```bash
-/dream            # collect evidence, ask the model for edits (runs in background)
-/dream 30         # look back 30 days
-/dream status     # show the pending edits
-/dream apply      # write them
-```
-
-The collection runs in the background. Reading every session file of the last
-days takes longer than the command limit allows, so the command returns
-straight away and you get a notification when the result is ready.
-
-What it does:
-
-1. Collects the raw material: long-term entries (keyed by the same hash the
-   audit report shows), daily logs, and session transcripts from
-   `~/.pi/agent/sessions/`.
-2. Exports a compact digest of every session into `transcripts/`, so the raw
-   evidence becomes searchable through qmd. A line that carries a credential
-   is left out of the digest, and a digest that still holds one is not
-   written at all.
-3. Asks the model for a concrete list of edits: `verify`, `fix`, `add`,
-   `forget`, `merge`, `wiki`.
-4. Writes the list to `.audit/dream-result.json` and stops.
-
-`/dream apply` is the only step that changes memory:
-
-| Action | Effect |
-|--------|--------|
-| `verify` | Records the status and the evidence in `.audit/verified.json`. The markdown is not rewritten. |
-| `fix` | Replaces the entry body with the corrected text. |
-| `add` | Appends a new entry to `MEMORY.md`. |
-| `forget` | Removes the entry and writes a recovery record, so `memory_restore` can bring it back. |
-| `merge` | Moves the body of the old entry into the target entry and retires the old entry with a recovery record. |
-| `wiki` | Merges the page into `wiki/<topic>.md`. |
-
-The model never decides what is true on its own: an entry is only marked
-verified when the transcript shows it. The verdict is the model's judgement,
-so a hand-written `#已验证` tag in the entry always wins over the sidecar.
-
 ## Knowledge index (fork addition)
 
 Anthropic's architecture keeps a "memory representation" layer: a wiki the
@@ -382,7 +332,7 @@ index injected. This is the same split.
 ~/.pi/agent/memory/
   topics/<name>.md        # topic notes: the body of one subject
   wiki/<name>.md          # wiki pages: linked knowledge the agent maintains
-  transcripts/<date>-<session>.md   # session digests exported by /dream
+  transcripts/<date>-<session>.md   # session digests from earlier versions
 ```
 
 - The injected context carries one line per file (title, path, first line).
@@ -391,8 +341,6 @@ index injected. This is the same split.
   or reads one when `name` is given.
 - `memory_write` with target `topic` or `wiki` writes a file. Give the name in
   the `topic` parameter. A note cannot grow past 20,000 characters.
-- The exported digests are search evidence, not an archive. The newest 200
-  are kept, the rest are deleted.
 
 ## Verification status (fork addition)
 
@@ -403,8 +351,6 @@ was never checked.
   `#pending`).
 - The injected layer puts explicitly unverified notes last, so they are less
   likely to be read as established fact.
-- `/dream` records verification results in `.audit/verified.json`. The markdown
-  is left untouched, so a hand-written tag always wins over the sidecar.
 
 ## Superseding contradictions (fork addition)
 
@@ -456,7 +402,6 @@ npm test
 
 # Fork check suites (no LLM, no qmd). Run with tsx, no Bun needed.
 npx tsx test/audit.check.ts
-npx tsx test/dream.check.ts
 npx tsx test/fixes.check.ts
 npx tsx test/project.check.ts
 npx tsx test/seed.check.ts
@@ -487,7 +432,7 @@ belongs to a machine, not to a clean CI run.
 | Level | Command | Requirements | What it tests |
 |-------|---------|-------------|---------------|
 | Unit | `npm test` (`test/unit.test.ts`) | Bun | Context builder, truncation, handoff, scratchpad parsing, qmd plumbing |
-| Checks | `npx tsx test/*.check.ts` | tsx only | Audit layer, dreaming, project tier, seeding, command wiring, and the regressions of the 2026-11-10 fixes |
+| Checks | `npx tsx test/*.check.ts` | tsx only | Audit layer, project tier, seeding, command wiring, and the regressions of the 2026-11-10 fixes |
 | Live search | `npx tsx test/live-search.check.ts` | qmd on this machine | The real collection answers a keyword and a semantic query |
 | E2E | `npm run test:e2e` (`test/e2e.ts`) | pi + API key | Tool registration, write/recall, scratchpad lifecycle, search |
 | Eval | `npm run test:eval` (`test/eval-recall.ts`) | pi + API key + qmd | Recall accuracy with vs without selective injection |

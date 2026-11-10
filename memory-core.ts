@@ -764,63 +764,6 @@ export function verificationStatus(text: string): VerificationStatus {
 	return "pending";
 }
 
-/** Sidecar written by /dream. The markdown stays untouched. */
-interface VerifiedRecord {
-	status: VerificationStatus;
-	evidence?: string;
-	at?: string;
-}
-
-let verifiedStateCache: Record<string, VerifiedRecord> | null = null;
-let verifiedStateCacheMtime = -1;
-
-function verifiedStateFile(): string {
-	return path.join(AUDIT_DIR, "verified.json");
-}
-
-/** Shape check only: the sidecar is a map of key -> record. */
-function asVerifiedMap(value: unknown): Record<string, VerifiedRecord> | null {
-	if (!value || typeof value !== "object") return null;
-	return value as Record<string, VerifiedRecord>;
-}
-
-export function readVerifiedState(): Record<string, VerifiedRecord> {
-	const file = verifiedStateFile();
-	// The sidecar is read on every injection, so the parsed copy is kept and
-	// refreshed when the file changes.
-	const mtime = fileMtime(file);
-	if (verifiedStateCache && verifiedStateCacheMtime === mtime) return verifiedStateCache;
-	verifiedStateCacheMtime = mtime;
-	verifiedStateCache = readJsonSidecar(file, asVerifiedMap) ?? {};
-	return verifiedStateCache;
-}
-
-export function writeVerifiedState(state: Record<string, VerifiedRecord>): void {
-	writeJsonSidecar(verifiedStateFile(), state);
-	verifiedStateCache = state;
-	verifiedStateCacheMtime = fileMtime(verifiedStateFile());
-}
-
-/** Drop the cached sidecar, so the next read comes from disk. */
-export function _resetVerifiedState(): void {
-	verifiedStateCache = null;
-	verifiedStateCacheMtime = -1;
-}
-
-/**
- * Inline tag wins over the sidecar, so a hand-written tag is always honoured.
- *
- * `key` must be the key of the block the sidecar recorded. The sidecar is
- * written with the key of the whole stamped block, so the lookup key and the
- * stored key have to be the same value.
- */
-function verificationStatusOf(text: string, key?: string): VerificationStatus {
-	const inline = verificationStatus(text);
-	if (inline !== "pending") return inline;
-	const record = readVerifiedState()[key ?? auditKey(text)];
-	return record?.status ?? "pending";
-}
-
 /** Lower sorts first. Unverified notes sink to the end of the injected block. */
 function verificationRank(status: VerificationStatus): number {
 	if (status === "verified") return 0;
@@ -839,8 +782,7 @@ export function orderByVerification(content: string): string {
 	if (blocks.length < 2) return content;
 	if (blocks.some((block) => block.stamp === null)) return content;
 	const sorted = [...blocks].sort(
-		(a, b) =>
-			verificationRank(verificationStatusOf(a.body, a.key)) - verificationRank(verificationStatusOf(b.body, b.key)),
+		(a, b) => verificationRank(verificationStatus(a.body)) - verificationRank(verificationStatus(b.body)),
 	);
 	if (sorted.every((block, i) => block.full === blocks[i].full)) return content;
 	return `${sorted.map((block) => block.full).join("\n\n")}\n`;

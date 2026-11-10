@@ -29,16 +29,12 @@ const {
 	_setAuditCwd,
 	_setProjectTrust,
 	_resetSupersedes,
-	applyDreamActions,
 	auditContext,
 	buildAuditReport,
 	buildMemoryContext,
-	buildSessionDigest,
 	collectAuditRows,
-	collectDreamEntries,
 	collectSeedMessages,
 	flushAuditLedger,
-	orderByVerification,
 	postProcessContext,
 	pruneOldFiles,
 	resetAuditLedger,
@@ -46,7 +42,6 @@ const {
 	updateMemoryFile,
 	withMemoryLock,
 	writeJsonAtomic,
-	writeVerifiedState,
 } = mod as typeof import("../index.ts");
 
 _setBaseDir(memoryDir);
@@ -107,101 +102,22 @@ const TWO_ENTRIES = [
 	"",
 ].join("\n");
 
-// --- 1. the verification sidecar reaches the injected order ---------------
-
-await check("a sidecar-verified entry is injected first", () => {
-	writeMemory(TWO_ENTRIES);
-	const blocks = splitAuditBlocks(TWO_ENTRIES, "MEMORY.md");
-	assert.equal(blocks.length, 2);
-	// The sidecar stores the key of the whole stamped block.
-	writeVerifiedState({ [blocks[1].key]: { status: "verified", evidence: "checked", at: "2026-01-01" } });
-	const ordered = orderByVerification(TWO_ENTRIES);
-	assert.ok(
-		ordered.indexOf("second entry") < ordered.indexOf("first entry"),
-		`sidecar status was not honoured:\n${ordered}`,
-	);
-});
-
-// --- 2. the merge action moves the old body into the target ---------------
-
-await check("merge moves the old entry into the target entry", () => {
-	writeMemory(TWO_ENTRIES);
-	const entries = collectDreamEntries();
-	const oldEntry = entries.find((e) => e.text.includes("first entry"));
-	const targetEntry = entries.find((e) => e.text.includes("second entry"));
-	assert.ok(oldEntry && targetEntry);
-	const report = applyDreamActions(
-		{ sessionManager: { getSessionId: () => "test-session" } } as any,
-		{
-			createdAt: "2026-01-01T00:00:00.000Z",
-			days: 30,
-			entriesScanned: entries.length,
-			transcriptsScanned: 0,
-			actions: [{ action: "merge", key: oldEntry.key, into: targetEntry.key }],
-			notes: [],
-		} as any,
-	);
-	assert.equal(report.merged, 1, `merge was skipped: ${report.skipped.join(", ")}`);
-	const content = fs.readFileSync(path.join(memoryDir, "MEMORY.md"), "utf-8");
-	assert.ok(!content.includes("[aaaaaaaa]"), "the old entry should be gone as its own block");
-	assert.ok(content.includes("[bbbbbbbb]"), "the target entry should stay");
-	assert.ok(content.includes("first entry"), "the old body should move into the target entry");
-	assert.ok(content.includes("second entry"), "the target body should stay");
-});
-
-await check("merge without a target entry is skipped", () => {
-	writeMemory(TWO_ENTRIES);
-	const entries = collectDreamEntries();
-	const report = applyDreamActions(
-		{ sessionManager: { getSessionId: () => "test-session" } } as any,
-		{
-			createdAt: "2026-01-01T00:00:00.000Z",
-			days: 30,
-			entriesScanned: entries.length,
-			transcriptsScanned: 0,
-			actions: [{ action: "merge", key: entries[0].key, into: "not-a-real-key" }],
-			notes: [],
-		} as any,
-	);
-	assert.equal(report.merged, 0);
-	assert.ok(report.skipped.length > 0, "the skip should be reported");
-});
-
 // --- 3. /audit reset keeps the other state --------------------------------
 
-await check("audit reset keeps the supersede, verification and dream state", () => {
+await check("audit reset keeps the other audit state", () => {
 	const auditDir = path.join(memoryDir, ".audit");
 	fs.writeFileSync(path.join(auditDir, "ledger.json"), '{"version":1}', "utf-8");
 	fs.writeFileSync(path.join(auditDir, "supersedes.json"), '{"a":"b"}', "utf-8");
-	fs.writeFileSync(path.join(auditDir, "verified.json"), '{"c":{"status":"verified"}}', "utf-8");
-	fs.writeFileSync(path.join(auditDir, "dream-result.json"), '{"actions":[]}', "utf-8");
+	fs.writeFileSync(path.join(auditDir, "seed-applied.json"), '{"appliedAt":"2026-01-01"}', "utf-8");
 	fs.writeFileSync(path.join(auditDir, "report-2026-01-01.md"), "# report", "utf-8");
 
 	resetAuditLedger();
 
 	assert.equal(fs.existsSync(path.join(auditDir, "ledger.json")), false, "the ledger should be cleared");
 	assert.equal(fs.existsSync(path.join(auditDir, "report-2026-01-01.md")), false, "old reports should be removed");
-	for (const keep of ["supersedes.json", "verified.json", "dream-result.json"]) {
+	for (const keep of ["supersedes.json", "seed-applied.json"]) {
 		assert.equal(fs.existsSync(path.join(auditDir, keep)), true, `${keep} must survive the reset`);
 	}
-});
-
-// --- 5. the session digest drops lines with a credential ------------------
-
-await check("a session digest drops lines that carry a credential", () => {
-	const lines = [
-		JSON.stringify({
-			type: "message",
-			message: { role: "user", content: [{ type: "text", text: "token is sk-abcdefghijklmnopqrstuvwxyz012345" }] },
-		}),
-		JSON.stringify({
-			type: "message",
-			message: { role: "user", content: [{ type: "text", text: "use pnpm for this repo" }] },
-		}),
-	].join("\n");
-	const digest = buildSessionDigest(lines);
-	assert.ok(!digest.includes("sk-abcdefghijklmnopqrstuvwxyz012345"), digest);
-	assert.ok(digest.includes("use pnpm for this repo"), digest);
 });
 
 // --- 6. seed mining never sends a credential to the model ----------------
