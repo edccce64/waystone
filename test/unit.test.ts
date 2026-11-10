@@ -79,6 +79,7 @@ function cleanupTmpDir() {
 function createMockPi() {
 	const tools: Record<string, any> = {};
 	const hooks: Record<string, (...args: unknown[]) => unknown> = {};
+	const commands: Record<string, any> = {};
 
 	const pi = {
 		registerTool(toolDef: any) {
@@ -87,9 +88,12 @@ function createMockPi() {
 		on(event: string, handler: (...args: unknown[]) => unknown) {
 			hooks[event] = handler;
 		},
+		registerCommand(name: string, command: any) {
+			commands[name] = command;
+		},
 	};
 
-	return { pi, tools, hooks };
+	return { pi, tools, hooks, commands };
 }
 
 /** Create a mock tool execution context. */
@@ -2058,6 +2062,8 @@ describe("KV cache stability: memory snapshot", () => {
 				{},
 				{
 					hasUI: false,
+					cwd: tmpDir,
+					isProjectTrusted: () => false,
 					sessionManager: { getSessionId: () => "newsess0" },
 					ui: { notify: () => {} },
 				},
