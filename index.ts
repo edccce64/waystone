@@ -1823,6 +1823,152 @@ export function findConflictCandidates(rows: AuditRow[]): [AuditRow, AuditRow][]
 }
 
 // ---------------------------------------------------------------------------
+// Background jobs (fork addition)
+//
+// /seed and /dream are one lifecycle: report a pending sidecar, apply it, or
+// start a run that outlives the command. Only the material, the prompt, the
+// answer schema and the apply step differ, so those stay with each job.
+// ---------------------------------------------------------------------------
+
+/** What the shared lifecycle needs from one job. */
+interface SidecarJob<TResult> {
+	read: () => TResult | null;
+	write: (result: TResult) => void;
+	/** Body of `status` when the sidecar holds a result. */
+	describe: (result: TResult) => string;
+	emptyMessage: string;
+	runningMessage: string;
+	noResultMessage: string;
+	/** Set while the detached run is going; `status` reports on it. */
+	inFlight: boolean;
+}
+
+/** `<cmd> status` / `<cmd> apply`. Returns false for every other subcommand. */
+function handleJobSubcommand<TResult>(
+	job: SidecarJob<TResult>,
+	ctx: ExtensionCommandContext,
+	sub: string,
+	apply: (result: TResult) => void,
+): boolean {
+	if (sub !== "status" && sub !== "apply") return false;
+	const result = job.read();
+	if (!result) {
+		if (sub === "apply") ctx.ui.notify(job.noResultMessage, "warning");
+		else ctx.ui.notify(job.inFlight ? job.runningMessage : job.emptyMessage, "info");
+		return true;
+	}
+	if (sub === "apply") apply(result);
+	else ctx.ui.notify(job.describe(result), "info");
+	return true;
+}
+
+/**
+ * Start the slow half of a job without awaiting it: pi caps a command at 60s.
+ * The flag clears when the body ends, which is what `status` reports on. Each
+ * job keeps its own error handling.
+ */
+function startDetachedJob<TResult>(job: SidecarJob<TResult>, body: () => Promise<void>): void {
+	job.inFlight = true;
+	void (async () => {
+		try {
+			await body();
+		} finally {
+			job.inFlight = false;
+		}
+	})();
+}
+
+/** Write the sidecar, refresh search, and announce the finished run. */
+function publishJobResult<TResult>(
+	job: SidecarJob<TResult>,
+	ctx: ExtensionCommandContext,
+	result: TResult,
+	message: string,
+): void {
+	job.write(result);
+	scheduleQmdRefresh();
+	// Plain notify, not notifySafe: the run reports from a detached task, and a
+	// UI that has gone away should surface as a failed run, not as silence.
+	ctx.ui.notify(message, "info");
+}
+
+/** Refresh the qmd index in the background. A failure is not the turn's problem. */
+function scheduleQmdRefresh(): void {
+	void ensureQmdAvailableForUpdate()
+		.then(() => scheduleQmdUpdate())
+		.catch(() => {});
+}
+
+/** Drop a sidecar, so a fresh run is never confused with an old one. */
+function clearSidecar(file: string): void {
+	try {
+		fs.rmSync(file, { force: true });
+	} catch {
+		// Nothing to remove.
+	}
+}
+
+/** `--days`, `14d` or a bare `14` on a command line, clamped to a sane range. */
+function parseDaysArg(trimmed: string, fallback: number): number {
+	const daysMatch = trimmed.match(/(?:^|\s)(\d{1,4})d?(?:\s|$)/);
+	return daysMatch ? Math.min(365, Math.max(1, Number(daysMatch[1]))) : fallback;
+}
+
+/** The JSON array in a model reply, ignoring code fences and surrounding prose. */
+function parseJsonArray<T>(raw: string, map: (item: unknown) => T | null): T[] {
+	let text = raw.trim();
+	const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+	if (fence) text = fence[1].trim();
+	const start = text.indexOf("[");
+	const end = text.lastIndexOf("]");
+	if (start === -1 || end <= start) return [];
+	try {
+		const parsed: unknown = JSON.parse(text.slice(start, end + 1));
+		if (!Array.isArray(parsed)) return [];
+		const out: T[] = [];
+		for (const item of parsed) {
+			const value = map(item);
+			if (value) out.push(value);
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * One model call: a system prompt and a single user message. The prompt and
+ * the answer parser stay with the job that owns them.
+ */
+async function callModelOnce(
+	ctx: ExtensionCommandContext,
+	systemPrompt: string,
+	prompt: string,
+): Promise<{ text: string; error?: string }> {
+	const model = ctx.model;
+	if (!model) return { text: "", error: "No active model" };
+	const apiKey = await resolveExitSummaryApiKey(ctx, model);
+	if (!apiKey) return { text: "", error: `API key resolution failed for ${model.provider}/${model.id}` };
+	try {
+		const response = await complete(
+			model,
+			{
+				systemPrompt,
+				messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
+			},
+			{ apiKey },
+		);
+		const text = response.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("\n");
+		return { text };
+	} catch (err) {
+		return { text: "", error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Seeding from past sessions (fork addition)
 // ---------------------------------------------------------------------------
 
@@ -1877,12 +2023,17 @@ function extractUserText(content: unknown): string {
 
 const SLASH_COMMAND_ONLY = /^\/[a-z][\w-]*$/i;
 
-/** Durable-looking user prompts from past sessions, newest first, deduplicated. */
-export function collectSeedMessages(days: number, projectFilter?: string): SeedMessage[] {
+interface SessionFile {
+	project: string;
+	file: string;
+	day: string;
+	raw: string;
+}
+
+/** Every session file inside the cutoff, handed over with its raw text. */
+function walkSessionFiles(days: number, visit: (session: SessionFile) => void, projectFilter?: string): void {
 	const root = sessionsRoot();
 	const cutoff = Date.now() - days * 86_400_000;
-	const seen = new Set<string>();
-	const out: SeedMessage[] = [];
 
 	let projects: string[] = [];
 	try {
@@ -1891,7 +2042,7 @@ export function collectSeedMessages(days: number, projectFilter?: string): SeedM
 			.filter((e) => e.isDirectory())
 			.map((e) => e.name);
 	} catch {
-		return [];
+		return;
 	}
 
 	for (const project of projects) {
@@ -1909,6 +2060,19 @@ export function collectSeedMessages(days: number, projectFilter?: string): SeedM
 			if (Number.isFinite(at) && at < cutoff) continue;
 			const raw = readFileSafe(path.join(root, project, file), SESSION_FILE_MAX_BYTES);
 			if (!raw) continue;
+			visit({ project, file, day, raw });
+		}
+	}
+}
+
+/** Durable-looking user prompts from past sessions, newest first, deduplicated. */
+export function collectSeedMessages(days: number, projectFilter?: string): SeedMessage[] {
+	const seen = new Set<string>();
+	const out: SeedMessage[] = [];
+
+	walkSessionFiles(
+		days,
+		({ project, day, raw }) => {
 			for (const line of raw.split("\n")) {
 				if (!line.includes('"role":"user"')) continue;
 				let entry: { type?: string; timestamp?: string; message?: { role?: string; content?: unknown } };
@@ -1930,8 +2094,9 @@ export function collectSeedMessages(days: number, projectFilter?: string): SeedM
 				seen.add(fingerprint);
 				out.push({ text, project, at: entry.timestamp ?? day });
 			}
-		}
-	}
+		},
+		projectFilter,
+	);
 
 	out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
 	return out.slice(0, SEED_MAX_MESSAGES);
@@ -1952,35 +2117,21 @@ export function looksLikeSecret(text: string): boolean {
 }
 
 function parseCandidateArray(raw: string): SeedCandidate[] {
-	let text = raw.trim();
-	const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-	if (fence) text = fence[1].trim();
-	const start = text.indexOf("[");
-	const end = text.lastIndexOf("]");
-	if (start === -1 || end <= start) return [];
-	try {
-		const parsed: unknown = JSON.parse(text.slice(start, end + 1));
-		if (!Array.isArray(parsed)) return [];
-		const out: SeedCandidate[] = [];
-		for (const item of parsed) {
-			if (!item || typeof item !== "object") continue;
-			const record = item as { text?: unknown; category?: unknown };
-			if (typeof record.text !== "string") continue;
-			const value = record.text.replace(/\s+/g, " ").trim();
-			if (value.length < 8 || value.length > 300) continue;
-			if (value.includes("\n")) continue;
-			if (looksLikeSecret(value)) continue;
-			const category =
-				typeof record.category === "string" &&
-				/^(preference|decision|convention|failure|insight)$/i.test(record.category)
-					? record.category.toLowerCase()
-					: "insight";
-			out.push({ text: value, category });
-		}
-		return out;
-	} catch {
-		return [];
-	}
+	return parseJsonArray<SeedCandidate>(raw, (item) => {
+		if (!item || typeof item !== "object") return null;
+		const record = item as { text?: unknown; category?: unknown };
+		if (typeof record.text !== "string") return null;
+		const value = record.text.replace(/\s+/g, " ").trim();
+		if (value.length < 8 || value.length > 300) return null;
+		if (value.includes("\n")) return null;
+		if (looksLikeSecret(value)) return null;
+		const category =
+			typeof record.category === "string" &&
+			/^(preference|decision|convention|failure|insight)$/i.test(record.category)
+				? record.category.toLowerCase()
+				: "insight";
+		return { text: value, category };
+	});
 }
 
 function buildSeedPrompt(messages: SeedMessage[]): string {
@@ -1992,30 +2143,9 @@ async function extractSeedBatch(
 	ctx: ExtensionCommandContext,
 	messages: SeedMessage[],
 ): Promise<{ candidates: SeedCandidate[]; error?: string }> {
-	const model = ctx.model;
-	if (!model) return { candidates: [], error: "No active model" };
-	const apiKey = await resolveExitSummaryApiKey(ctx, model);
-	if (!apiKey) return { candidates: [], error: `API key resolution failed for ${model.provider}/${model.id}` };
-
-	try {
-		const response = await complete(
-			model,
-			{
-				systemPrompt: SEED_SYSTEM_PROMPT,
-				messages: [
-					{ role: "user", content: [{ type: "text", text: buildSeedPrompt(messages) }], timestamp: Date.now() },
-				],
-			},
-			{ apiKey },
-		);
-		const text = response.content
-			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-			.map((c) => c.text)
-			.join("\n");
-		return { candidates: parseCandidateArray(text) };
-	} catch (err) {
-		return { candidates: [], error: err instanceof Error ? err.message : String(err) };
-	}
+	const { text, error } = await callModelOnce(ctx, SEED_SYSTEM_PROMPT, buildSeedPrompt(messages));
+	if (error) return { candidates: [], error };
+	return { candidates: parseCandidateArray(text) };
 }
 
 /** Skip anything already present in memory, so a re-run stays idempotent. */
@@ -2094,8 +2224,6 @@ interface SeedResult {
 
 type SeedTarget = "global" | "project";
 
-let seedInFlight = false;
-
 function seedResultFile(): string {
 	return path.join(AUDIT_DIR, "seed-result.json");
 }
@@ -2118,88 +2246,101 @@ function notifySafe(ui: ExtensionCommandContext["ui"], message: string, level: "
 	}
 }
 
+/** Lifecycle, sidecar and messages of /seed. The pipeline itself is below. */
+const seedJob: SidecarJob<SeedResult> = {
+	read: readSeedResult,
+	write: (result) => writeJsonSidecar(seedResultFile(), result),
+	describe: (result) => {
+		const preview = result.candidates
+			.slice(0, 40)
+			.map((c) => `#${c.category} ${c.text}`)
+			.join("\n");
+		return `Seed ready: ${result.candidates.length} candidate(s) from ${result.scanned} prompts, ${result.skippedExisting} already known, target ${result.target} memory.\n${preview}\nRun /seed apply to write.`;
+	},
+	emptyMessage: "No pending seed result.",
+	runningMessage: "Seed extraction is running in the background. Check /seed status again in a minute.",
+	noResultMessage: "No pending seed result. Run /seed first.",
+	inFlight: false,
+};
+
 async function extractAllBatches(
 	ctx: ExtensionCommandContext,
 	messages: SeedMessage[],
 	result: SeedResult,
 ): Promise<void> {
 	const ui = ctx.ui;
-	try {
-		for (let i = 0; i < messages.length; i += SEED_BATCH_SIZE) {
-			const batch = messages.slice(i, i + SEED_BATCH_SIZE);
-			const done = Math.min(i + SEED_BATCH_SIZE, messages.length);
-			try {
-				const extracted = await extractSeedBatch(ctx, batch);
-				if (extracted.error) {
-					result.failedBatches.push(`batch ${i / SEED_BATCH_SIZE + 1}: ${extracted.error}`);
-				} else {
-					result.candidates.push(...extracted.candidates);
-				}
-			} catch (err) {
-				result.failedBatches.push(
-					`batch ${i / SEED_BATCH_SIZE + 1}: ${err instanceof Error ? err.message : String(err)}`,
-				);
+	for (let i = 0; i < messages.length; i += SEED_BATCH_SIZE) {
+		const batch = messages.slice(i, i + SEED_BATCH_SIZE);
+		const done = Math.min(i + SEED_BATCH_SIZE, messages.length);
+		try {
+			const extracted = await extractSeedBatch(ctx, batch);
+			if (extracted.error) {
+				result.failedBatches.push(`batch ${i / SEED_BATCH_SIZE + 1}: ${extracted.error}`);
+			} else {
+				result.candidates.push(...extracted.candidates);
 			}
-
-			// Persist after every batch. Extraction runs detached from the command,
-			// so a session that quits mid-run must not lose what it already paid for.
-			if (seedWasApplied()) {
-				notifySafe(ui, "pi-memory /seed: the result was applied, stopping.", "info");
-				return;
-			}
-			try {
-				writeJsonSidecar(seedResultFile(), result);
-			} catch {
-				// Non-fatal; the final write below still tries.
-			}
-
-			notifySafe(
-				ui,
-				`pi-memory /seed: ${done}/${messages.length} prompts processed, ${result.candidates.length} candidate(s) so far.`,
-				"info",
+		} catch (err) {
+			result.failedBatches.push(
+				`batch ${i / SEED_BATCH_SIZE + 1}: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
 
-		const { fresh, skipped } = filterAgainstExisting(result.candidates, result.target, projectCwd);
-		result.candidates = fresh;
-		result.skippedExisting = skipped;
-
+		// Persist after every batch. Extraction runs detached from the command,
+		// so a session that quits mid-run must not lose what it already paid for.
 		if (seedWasApplied()) {
 			notifySafe(ui, "pi-memory /seed: the result was applied, stopping.", "info");
 			return;
 		}
-
-		writeJsonSidecar(seedResultFile(), result);
-
-		if (result.candidates.length === 0) {
-			notifySafe(
-				ui,
-				result.skippedExisting > 0
-					? `pi-memory /seed done: all ${result.skippedExisting} candidate(s) already in memory. Nothing to do.`
-					: "pi-memory /seed done: no durable candidates found.",
-				"info",
-			);
-			return;
+		try {
+			seedJob.write(result);
+		} catch {
+			// Non-fatal; the final write below still tries.
 		}
 
-		if (result.autoApply) {
-			commitSeedResult(ctx, result);
-			return;
-		}
-
-		const preview = result.candidates
-			.slice(0, 10)
-			.map((c) => `#${c.category} ${c.text}`)
-			.join("\n");
-		const failures = result.failedBatches.length ? ` (${result.failedBatches.length} batch(es) failed)` : "";
 		notifySafe(
 			ui,
-			`pi-memory /seed done${failures}: ${result.candidates.length} candidate(s), ${result.skippedExisting} already known.\n${preview}\nRun /seed apply to write them, /seed status for all.`,
+			`pi-memory /seed: ${done}/${messages.length} prompts processed, ${result.candidates.length} candidate(s) so far.`,
 			"info",
 		);
-	} finally {
-		seedInFlight = false;
 	}
+
+	const { fresh, skipped } = filterAgainstExisting(result.candidates, result.target, projectCwd);
+	result.candidates = fresh;
+	result.skippedExisting = skipped;
+
+	if (seedWasApplied()) {
+		notifySafe(ui, "pi-memory /seed: the result was applied, stopping.", "info");
+		return;
+	}
+
+	seedJob.write(result);
+
+	if (result.candidates.length === 0) {
+		notifySafe(
+			ui,
+			result.skippedExisting > 0
+				? `pi-memory /seed done: all ${result.skippedExisting} candidate(s) already in memory. Nothing to do.`
+				: "pi-memory /seed done: no durable candidates found.",
+			"info",
+		);
+		return;
+	}
+
+	if (result.autoApply) {
+		commitSeedResult(ctx, result);
+		return;
+	}
+
+	const preview = result.candidates
+		.slice(0, 10)
+		.map((c) => `#${c.category} ${c.text}`)
+		.join("\n");
+	const failures = result.failedBatches.length ? ` (${result.failedBatches.length} batch(es) failed)` : "";
+	notifySafe(
+		ui,
+		`pi-memory /seed done${failures}: ${result.candidates.length} candidate(s), ${result.skippedExisting} already known.\n${preview}\nRun /seed apply to write them, /seed status for all.`,
+		"info",
+	);
 }
 
 /** Destination file for a seed run, creating the project directory if needed. */
@@ -2244,17 +2385,11 @@ function commitSeedResult(ctx: ExtensionCommandContext, result: SeedResult): voi
 	const file = seedTargetFile(result, targetCwd);
 	withMemoryLock(() => {
 		appendStamped(file, body, ts, sid);
-		try {
-			fs.rmSync(seedResultFile(), { force: true });
-		} catch {
-			// Nothing to remove.
-		}
+		clearSidecar(seedResultFile());
 	});
 	markSeedApplied(result);
 	snapshotDirty = true;
-	void ensureQmdAvailableForUpdate()
-		.then(() => scheduleQmdUpdate())
-		.catch(() => {});
+	scheduleQmdRefresh();
 	const where = result.target === "project" ? `project memory (${file})` : "MEMORY.md";
 	notifySafe(
 		ctx.ui,
@@ -2269,7 +2404,7 @@ function applySeedResult(ctx: ExtensionCommandContext, result: SeedResult): void
 
 	// The background extraction may still be running. Applying now would let
 	// the next batch write the result file again and revive applied entries.
-	if (seedInFlight) {
+	if (seedJob.inFlight) {
 		notifySafe(ctx.ui, "Seed extraction is still running. Apply again when /seed status says it is done.", "warning");
 		return;
 	}
@@ -2320,47 +2455,16 @@ async function runSeed(args: string, ctx: ExtensionCommandContext): Promise<void
 	const trimmed = args.trim();
 	const sub = trimmed.split(/\s+/)[0]?.toLowerCase() ?? "";
 
-	if (sub === "apply") {
-		const result = readSeedResult();
-		if (!result) {
-			ctx.ui.notify("No pending seed result. Run /seed first.", "warning");
-			return;
-		}
-		applySeedResult(ctx, result);
-		return;
-	}
-
-	if (sub === "status") {
-		const result = readSeedResult();
-		if (!result) {
-			ctx.ui.notify(
-				seedInFlight
-					? "Seed extraction is running in the background. Check /seed status again in a minute."
-					: "No pending seed result.",
-				"info",
-			);
-			return;
-		}
-		const preview = result.candidates
-			.slice(0, 40)
-			.map((c) => `#${c.category} ${c.text}`)
-			.join("\n");
-		ctx.ui.notify(
-			`Seed ready: ${result.candidates.length} candidate(s) from ${result.scanned} prompts, ${result.skippedExisting} already known, target ${result.target} memory.\n${preview}\nRun /seed apply to write.`,
-			"info",
-		);
-		return;
-	}
+	if (handleJobSubcommand(seedJob, ctx, sub, (result) => applySeedResult(ctx, result))) return;
 
 	const yes = /(^|\s)--yes(\s|$)/.test(trimmed);
 	const projectMatch = trimmed.match(/--project\s+(\S+)/);
-	const daysMatch = trimmed.match(/(?:^|\s)(\d{1,4})d?(?:\s|$)/);
-	const days = daysMatch ? Math.min(365, Math.max(1, Number(daysMatch[1]))) : SEED_DEFAULT_DAYS;
+	const days = parseDaysArg(trimmed, SEED_DEFAULT_DAYS);
 	const project = projectMatch?.[1];
 	const toMatch = trimmed.match(/--to\s+(global|project)\b/i);
 	const target: SeedTarget = toMatch ? (toMatch[1].toLowerCase() as SeedTarget) : "global";
 
-	if (seedInFlight) {
+	if (seedJob.inFlight) {
 		ctx.ui.notify("A seed run is already in progress. /seed status to check on it.", "info");
 		return;
 	}
@@ -2372,12 +2476,8 @@ async function runSeed(args: string, ctx: ExtensionCommandContext): Promise<void
 	}
 
 	// Drop any stale result so a fresh run is never confused with an old one.
-	try {
-		fs.rmSync(seedResultFile(), { force: true });
-		fs.rmSync(seedAppliedFile(), { force: true });
-	} catch {
-		// Nothing to remove.
-	}
+	clearSidecar(seedResultFile());
+	clearSidecar(seedAppliedFile());
 
 	const result: SeedResult = {
 		createdAt: new Date().toISOString(),
@@ -2393,7 +2493,6 @@ async function runSeed(args: string, ctx: ExtensionCommandContext): Promise<void
 		skippedExisting: 0,
 	};
 
-	seedInFlight = true;
 	const destination = target === "project" ? projectMemoryFile(ctx.cwd) : MEMORY_FILE;
 	ctx.ui.notify(
 		`pi-memory /seed: mining ${messages.length} prompt(s) from the last ${days} day(s) across ${result.batches} background batch(es). This returns now; you will be notified when it finishes, then run /seed apply. Result will target ${target} memory (${destination}).`,
@@ -2402,7 +2501,7 @@ async function runSeed(args: string, ctx: ExtensionCommandContext): Promise<void
 
 	// Deliberately not awaited: pi cancels or times out anything that outlives
 	// the command request.
-	void extractAllBatches(ctx, messages, result);
+	startDetachedJob(seedJob, () => extractAllBatches(ctx, messages, result));
 }
 
 // ---------------------------------------------------------------------------
@@ -2474,8 +2573,6 @@ interface DreamResult {
 	notes: string[];
 }
 
-let dreamInFlight = false;
-
 function dreamResultFile(): string {
 	return path.join(AUDIT_DIR, "dream-result.json");
 }
@@ -2495,6 +2592,23 @@ function writeDreamResult(result: DreamResult): void {
 	// truncated result that /dream apply then refuses to read.
 	writeJsonSidecar(dreamResultFile(), result);
 }
+
+/** Lifecycle, sidecar and messages of /dream. The pipeline itself is below. */
+const dreamJob: SidecarJob<DreamResult> = {
+	read: readDreamResult,
+	write: writeDreamResult,
+	describe: (result) => {
+		const preview = result.actions
+			.slice(0, 30)
+			.map((a) => `${a.action} ${a.key ?? a.topic ?? ""} ${(a.text ?? a.reason ?? a.evidence ?? "").slice(0, 90)}`)
+			.join("\n");
+		return `Dream ready: ${result.actions.length} action(s) from ${result.entriesScanned} entries and ${result.transcriptsScanned} transcript(s).\n${preview}\nRun /dream apply to write them.`;
+	},
+	emptyMessage: "No pending dream result.",
+	runningMessage: "Dreaming is running in the background. Check /dream status again.",
+	noResultMessage: "No pending dream result. Run /dream first.",
+	inFlight: false,
+};
 
 const DREAM_ERROR_MARKERS = /error|failed|failure|ENOENT|ECONNRESET|ETIMEDOUT|exception|not found|404|500/i;
 
@@ -2556,40 +2670,12 @@ interface DreamTranscript {
 
 /** Session transcripts from the last `days` days, newest first. */
 export function collectDreamTranscripts(days: number): DreamTranscript[] {
-	const root = sessionsRoot();
-	const cutoff = Date.now() - days * 86_400_000;
 	const out: DreamTranscript[] = [];
-
-	let projects: string[] = [];
-	try {
-		projects = fs
-			.readdirSync(root, { withFileTypes: true })
-			.filter((e) => e.isDirectory())
-			.map((e) => e.name);
-	} catch {
-		return [];
-	}
-
-	for (const project of projects) {
-		let files: string[] = [];
-		try {
-			files = fs.readdirSync(path.join(root, project)).filter((f) => f.endsWith(".jsonl"));
-		} catch {
-			continue;
-		}
-		for (const file of files) {
-			const day = file.slice(0, 10);
-			if (!DAILY_DATE_REGEX.test(day)) continue;
-			const at = Date.parse(`${day}T12:00:00Z`);
-			if (Number.isFinite(at) && at < cutoff) continue;
-			const raw = readFileSafe(path.join(root, project, file), SESSION_FILE_MAX_BYTES);
-			if (!raw) continue;
-			const digest = buildSessionDigest(raw);
-			if (!digest.trim()) continue;
-			out.push({ date: day, session: path.basename(file).replace(/\.jsonl$/, ""), project, digest });
-		}
-	}
-
+	walkSessionFiles(days, ({ project, file, day, raw }) => {
+		const digest = buildSessionDigest(raw);
+		if (!digest.trim()) return;
+		out.push({ date: day, session: path.basename(file).replace(/\.jsonl$/, ""), project, digest });
+	});
 	out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 	return out;
 }
@@ -2644,22 +2730,11 @@ const DREAM_CATEGORIES = new Set([
 ]);
 
 function parseDreamActions(raw: string): DreamAction[] {
-	let text = raw.trim();
-	const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-	if (fence) text = fence[1].trim();
-	const start = text.indexOf("[");
-	const end = text.lastIndexOf("]");
-	if (start === -1 || end <= start) return [];
-	try {
-		const parsed = JSON.parse(text.slice(start, end + 1));
-		if (!Array.isArray(parsed)) return [];
-		return parsed.filter(
-			(entry): entry is DreamAction =>
-				!!entry && typeof entry === "object" && typeof (entry as DreamAction).action === "string",
-		);
-	} catch {
-		return [];
-	}
+	return parseJsonArray<DreamAction>(raw, (entry) =>
+		entry && typeof entry === "object" && typeof (entry as DreamAction).action === "string"
+			? (entry as DreamAction)
+			: null,
+	);
 }
 
 async function runDreamModel(
@@ -2668,33 +2743,9 @@ async function runDreamModel(
 	transcripts: DreamTranscript[],
 	daily: string,
 ): Promise<{ actions: DreamAction[]; error?: string }> {
-	const model = ctx.model;
-	if (!model) return { actions: [], error: "No active model" };
-	const apiKey = await resolveExitSummaryApiKey(ctx, model);
-	if (!apiKey) return { actions: [], error: `API key resolution failed for ${model.provider}/${model.id}` };
-	try {
-		const response = await complete(
-			model,
-			{
-				systemPrompt: DREAM_SYSTEM_PROMPT,
-				messages: [
-					{
-						role: "user",
-						content: [{ type: "text", text: buildDreamPrompt(entries, transcripts, daily) }],
-						timestamp: Date.now(),
-					},
-				],
-			},
-			{ apiKey },
-		);
-		const text = response.content
-			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-			.map((c) => c.text)
-			.join("\n");
-		return { actions: parseDreamActions(text) };
-	} catch (err) {
-		return { actions: [], error: err instanceof Error ? err.message : String(err) };
-	}
+	const { text, error } = await callModelOnce(ctx, DREAM_SYSTEM_PROMPT, buildDreamPrompt(entries, transcripts, daily));
+	if (error) return { actions: [], error };
+	return { actions: parseDreamActions(text) };
 }
 
 /** Replace the block whose audit key matches, keeping the stamp comment. */
@@ -2971,117 +3022,82 @@ async function runDream(args: string, ctx: ExtensionCommandContext): Promise<voi
 	const trimmed = args.trim();
 	const sub = trimmed.split(/\s+/)[0]?.toLowerCase() ?? "";
 
-	if (sub === "status") {
-		const result = readDreamResult();
-		if (!result) {
-			ctx.ui.notify(
-				dreamInFlight
-					? "Dreaming is running in the background. Check /dream status again."
-					: "No pending dream result.",
-				"info",
-			);
-			return;
-		}
-		const preview = result.actions
-			.slice(0, 30)
-			.map((a) => `${a.action} ${a.key ?? a.topic ?? ""} ${(a.text ?? a.reason ?? a.evidence ?? "").slice(0, 90)}`)
-			.join("\n");
-		ctx.ui.notify(
-			`Dream ready: ${result.actions.length} action(s) from ${result.entriesScanned} entries and ${result.transcriptsScanned} transcript(s).\n${preview}\nRun /dream apply to write them.`,
-			"info",
-		);
-		return;
-	}
+	if (handleJobSubcommand(dreamJob, ctx, sub, (result) => applyDreamResult(ctx, result))) return;
 
-	if (sub === "apply") {
-		const result = readDreamResult();
-		if (!result) {
-			ctx.ui.notify("No pending dream result. Run /dream first.", "warning");
-			return;
-		}
-		const report = applyDreamActions(ctx, result);
-		try {
-			fs.rmSync(dreamResultFile(), { force: true });
-		} catch {
-			// Nothing to remove.
-		}
-		snapshotDirty = true;
-		void ensureQmdAvailableForUpdate()
-			.then(() => scheduleQmdUpdate())
-			.catch(() => {});
-		ctx.ui.notify(
-			`Dream applied: ${report.verified} verified, ${report.fixed} fixed, ${report.added} added, ${report.forgotten} forgotten, ${report.merged} merged, ${report.wiki} wiki page(s).${
-				report.skipped.length ? ` Skipped: ${report.skipped.join("; ")}` : ""
-			}`,
-			"info",
-		);
-		return;
-	}
-
-	if (dreamInFlight) {
+	if (dreamJob.inFlight) {
 		ctx.ui.notify("A dream run is already in progress. /dream status to check on it.", "info");
 		return;
 	}
 
-	const daysMatch = trimmed.match(/(?:^|\s)(\d{1,4})d?(?:\s|$)/);
-	const days = daysMatch ? Math.min(365, Math.max(1, Number(daysMatch[1]))) : DREAM_DEFAULT_DAYS;
-
-	if (dreamInFlight) {
-		ctx.ui.notify("A dream run is already in progress. /dream status to check on it.", "info");
-		return;
-	}
+	const days = parseDaysArg(trimmed, DREAM_DEFAULT_DAYS);
 
 	// Collecting the material reads every session file of the last days. That
 	// takes longer than the command limit allows, so it runs detached, the
 	// same way /seed does.
-	dreamInFlight = true;
 	ctx.ui.notify(
 		`pi-memory /dream: collecting the last ${days} day(s) in the background. This returns now; you will be notified when the result is ready.`,
 		"info",
 	);
+	startDetachedJob(dreamJob, () => dreamInBackground(ctx, days));
+}
 
-	void (async () => {
-		try {
-			const entries = collectDreamEntries();
-			const transcripts = collectDreamTranscripts(days);
-			const daily = collectDreamDaily(days);
+/** `/dream apply`: write the pending actions, then drop the sidecar. */
+function applyDreamResult(ctx: ExtensionCommandContext, result: DreamResult): void {
+	const report = applyDreamActions(ctx, result);
+	clearSidecar(dreamResultFile());
+	snapshotDirty = true;
+	scheduleQmdRefresh();
+	ctx.ui.notify(
+		`Dream applied: ${report.verified} verified, ${report.fixed} fixed, ${report.added} added, ${report.forgotten} forgotten, ${report.merged} merged, ${report.wiki} wiki page(s).${
+			report.skipped.length ? ` Skipped: ${report.skipped.join("; ")}` : ""
+		}`,
+		"info",
+	);
+}
 
-			if (entries.length === 0 && transcripts.length === 0) {
-				ctx.ui.notify(
-					`Nothing to dream about: no long-term entries and no transcripts in the last ${days} day(s).`,
-					"warning",
-				);
-				return;
-			}
+/**
+ * The detached half of /dream: gather the evidence, ask the model, publish.
+ *
+ * Kept as a function rather than an inline closure so `runDream` stays a
+ * straight line of subcommand handling.
+ */
+async function dreamInBackground(ctx: ExtensionCommandContext, days: number): Promise<void> {
+	try {
+		const entries = collectDreamEntries();
+		const transcripts = collectDreamTranscripts(days);
+		const daily = collectDreamDaily(days);
 
-			// Export the digests first: they are the evidence the model checks
-			// against, and they make the raw sessions searchable through qmd.
-			const exported = exportTranscripts(transcripts);
-
-			const { actions, error } = await runDreamModel(ctx, entries, transcripts, daily);
-			const result: DreamResult = {
-				createdAt: new Date().toISOString(),
-				days,
-				entriesScanned: entries.length,
-				transcriptsScanned: transcripts.length,
-				actions: actions ?? [],
-				notes: exported > 0 ? [`${exported} transcript digest(s) exported to transcripts/`] : [],
-			};
-			if (error) result.notes.push(`model error: ${error}`);
-			writeDreamResult(result);
-			void ensureQmdAvailableForUpdate()
-				.then(() => scheduleQmdUpdate())
-				.catch(() => {});
+		if (entries.length === 0 && transcripts.length === 0) {
 			ctx.ui.notify(
-				`Dream done: ${result.actions.length} action(s) from ${entries.length} entries and ${transcripts.length} transcript(s).\nRun /dream apply to write them, /dream status for all.`,
-				"info",
+				`Nothing to dream about: no long-term entries and no transcripts in the last ${days} day(s).`,
+				"warning",
 			);
-		} catch (err) {
-			ctx.ui.notify(`Dream failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
-		} finally {
-			dreamInFlight = false;
+			return;
 		}
-	})();
+
+		// Export the digests first: they are the evidence the model checks
+		// against, and they make the raw sessions searchable through qmd.
+		const exported = exportTranscripts(transcripts);
+
+		const { actions, error } = await runDreamModel(ctx, entries, transcripts, daily);
+		const result: DreamResult = {
+			createdAt: new Date().toISOString(),
+			days,
+			entriesScanned: entries.length,
+			transcriptsScanned: transcripts.length,
+			actions: actions ?? [],
+			notes: exported > 0 ? [`${exported} transcript digest(s) exported to transcripts/`] : [],
+		};
+		if (error) result.notes.push(`model error: ${error}`);
+		publishJobResult(
+			dreamJob,
+			ctx,
+			result,
+			`Dream done: ${result.actions.length} action(s) from ${entries.length} entries and ${transcripts.length} transcript(s).\nRun /dream apply to write them, /dream status for all.`,
+		);
+	} catch (err) {
+		ctx.ui.notify(`Dream failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+	}
 }
 
 // ---------------------------------------------------------------------------
