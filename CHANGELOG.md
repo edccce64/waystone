@@ -132,6 +132,12 @@ follows [Semantic Versioning](https://semver.org/).
   summary of its own pi sessions off, and restores every daily log it
   touched.
 
+### Docs
+
+- `README.zh-CN.md`: a full Simplified Chinese translation of `README.md`, same
+  sections, tables and code blocks. Both files carry a language switcher line
+  under the title; `README.md` stays the default.
+
 ## [0.4.2] — 2026-08-10
 
 ### Added

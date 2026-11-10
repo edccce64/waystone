@@ -1,5 +1,7 @@
 # Waystone
 
+[English](README.md) · [简体中文](README.zh-CN.md)
+
 **Memory for the [pi](https://github.com/earendil-works/pi) coding agent that treats the context window as a budget, not a dumping ground.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
