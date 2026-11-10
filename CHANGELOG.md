@@ -8,6 +8,9 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `test/perf.check.ts`: prints the timings of the hot paths (context
+  building, the audit pass, qmd search p95) with a fixed fixture. It sets no
+  thresholds and is not part of `npm run test:checks` or CI.
 - `/dream`: consolidates long-term memory against the raw session evidence.
   It collects the long-term entries, the daily logs and the session
   transcripts, exports a compact digest of every session into `transcripts/`,

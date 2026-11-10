@@ -8,6 +8,7 @@
 - `maintenance.ts`: audit ledger, supersedes, `/seed` and `/dream` pipelines, lifecycle hooks
 - `commands.ts`: the slash commands and the tools
 - `test/e2e.ts`: end-to-end tests that invoke `pi` as a subprocess
+- `test/perf.check.ts`: prints timings for the hot paths. Not part of `npm run test:checks` or CI
 - `README.md`: user-facing install/usage docs
 - `package.json`: metadata + **peer** dependencies (provided by the pi runtime)
 
