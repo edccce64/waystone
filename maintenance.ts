@@ -25,11 +25,9 @@ import {
 	appendStamped,
 	buildMemoryContext,
 	buildPreview,
-	captureCorrectionsEnabled,
 	DAILY_DATE_REGEX,
 	DAILY_DIR,
 	dailyPath,
-	detectCorrection,
 	EXIT_SUMMARY_MAX_CHARS,
 	EXIT_SUMMARY_MIN_MESSAGES,
 	EXIT_SUMMARY_SYSTEM_PROMPT,
@@ -49,7 +47,6 @@ import {
 	readFileSafe,
 	readJsonSidecar,
 	readVerifiedState,
-	recordCorrection,
 	SCRATCHPAD_FILE,
 	shortSessionId,
 	splitAuditBlocks,
@@ -2190,20 +2187,7 @@ export function registerLifecycleHooks(pi: ExtensionAPI) {
 	});
 
 	// --- Inject memory context before every agent turn ---
-	pi.on("before_agent_start", async (event, ctx) => {
-		// Capture corrections before the model has any chance to forget them.
-		const correction = captureCorrectionsEnabled() ? detectCorrection(event.prompt ?? "") : null;
-		if (correction) {
-			try {
-				if (recordCorrection(correction, nowTimestamp(), shortSessionId(ctx.sessionManager.getSessionId()))) {
-					await ensureQmdAvailableForUpdate();
-					scheduleQmdUpdate();
-				}
-			} catch {
-				// Capture is a bonus. Never let it break the turn.
-			}
-		}
-
+	pi.on("before_agent_start", async (event, _ctx) => {
 		const mode = getSnapshotMode();
 
 		let memoryContext: string;
@@ -2245,20 +2229,9 @@ export function registerLifecycleHooks(pi: ExtensionAPI) {
 						"for the authoritative latest state; anything written this session is in tool-call history.";
 		}
 
-		if (!memoryContext && !correction) return;
+		if (!memoryContext) return;
 
 		const headerLines: string[] = [];
-
-		if (correction) {
-			headerLines.push(
-				"",
-				"## Correction captured",
-				"",
-				`The user's last message corrects a prior assumption: "${correction}".`,
-				"It was appended to today's daily log with #correction.",
-				"If it establishes a durable rule, write it to memory now with memory_write.",
-			);
-		}
 
 		if (!memoryContext) {
 			return { systemPrompt: `${event.systemPrompt}\n${headerLines.join("\n")}` };

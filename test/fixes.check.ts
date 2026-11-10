@@ -37,7 +37,6 @@ const {
 	collectAuditRows,
 	collectDreamEntries,
 	collectSeedMessages,
-	detectCorrection,
 	flushAuditLedger,
 	orderByVerification,
 	postProcessContext,
@@ -185,19 +184,6 @@ await check("audit reset keeps the supersede, verification and dream state", () 
 	for (const keep of ["supersedes.json", "verified.json", "dream-result.json"]) {
 		assert.equal(fs.existsSync(path.join(auditDir, keep)), true, `${keep} must survive the reset`);
 	}
-});
-
-// --- 4. a correction with a credential is never captured ------------------
-
-await check("a correction that carries a credential is not captured", () => {
-	const correction = detectCorrection("不对，api_key=sk-abcdefghijklmnopqrstuvwxyz012345 是这个才对");
-	assert.equal(correction, null, "the credential must not be captured");
-});
-
-await check("a normal correction is still captured", () => {
-	const correction = detectCorrection("不对，我们用的是 pnpm，不是 npm。");
-	assert.ok(correction, "the correction should be captured");
-	assert.ok(correction.includes("pnpm"), correction);
 });
 
 // --- 5. the session digest drops lines with a credential ------------------

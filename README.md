@@ -416,33 +416,6 @@ Keys are the 8-character prefixes shown throughout the `/audit` report; any unam
 
 State lives in `~/.pi/agent/memory/.audit/supersedes.json`, not in the markdown. A superseded entry stops being injected but stays on disk, stays searchable by qmd, and is one command away from coming back. Nothing about the memory format changes, and the audit ledger keys stay stable because the text itself is never rewritten.
 
-## Correction capture (fork addition)
-
-> 你不对，应该用 pnpm 而不是 npm
-
-That is the highest-value sentence a user types and the one most likely to be lost — the agent has to notice it and call `memory_write` unprompted. This fork gives it a second chance: with `PI_MEMORY_CAPTURE_CORRECTIONS=on`, the raw prompt is checked before the turn starts.
-
-When capture is on and a prompt reads as a correction, two things happen:
-
-1. The correcting sentence is appended to today's daily log as `#correction …` (deduplicated, secrets rejected).
-2. A short `## Correction captured` block is added to the system prompt telling the model to persist it if it is a durable rule.
-
-Detection is deliberately narrow. `always`, `don't` and `never` alone are ordinary instructions and are **not** treated as corrections — the patterns need the phrasing of someone contradicting the agent. Prompts longer than 400 characters or containing a code block are skipped.
-
-| `PI_MEMORY_CAPTURE_CORRECTIONS` | Behaviour |
-|-------------------------------|-----------|
-| unset (default) | Never capture |
-| `on` / `1` / `true` | Capture corrections |
-| `off` / `0` / `false` | Never capture |
-
-Capture is **off by default**. Any other value is treated as off, so a typo
-never turns it on.
-
-Because this appends to the system prompt on a matching turn, it is a deliberate prefix-cache boundary. Corrections are rare, so the cost is small, but it is a real one, which is why capture stays off until you ask for it.
-
-A correction that carries a credential is never captured. It is not appended to
-the log and it is not shown to the model.
-
 ## Concurrent writes (fork addition)
 
 Every memory write is a read, a change and a write back. Two pi sessions that

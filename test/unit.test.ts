@@ -26,7 +26,6 @@ import {
 	buildMemoryContext,
 	buildQmdEnv,
 	buildQmdSpawn,
-	captureCorrectionsEnabled,
 	clampSearchLimit,
 	dailyPath,
 	ensureDirs,
@@ -1274,35 +1273,6 @@ describe("getQmdSearchTimeoutMs", () => {
 	});
 });
 
-describe("captureCorrectionsEnabled", () => {
-	let saved: string | undefined;
-
-	beforeEach(() => {
-		saved = process.env.PI_MEMORY_CAPTURE_CORRECTIONS;
-	});
-
-	afterEach(() => {
-		if (saved === undefined) delete process.env.PI_MEMORY_CAPTURE_CORRECTIONS;
-		else process.env.PI_MEMORY_CAPTURE_CORRECTIONS = saved;
-	});
-
-	test("stays off unless the variable explicitly enables it", () => {
-		// Default: nothing is captured, so the daily log does not collect
-		// prompts that merely look like corrections.
-		delete process.env.PI_MEMORY_CAPTURE_CORRECTIONS;
-		expect(captureCorrectionsEnabled()).toBe(false);
-		for (const value of ["off", "0", "false", "", "maybe"]) {
-			process.env.PI_MEMORY_CAPTURE_CORRECTIONS = value;
-			expect(captureCorrectionsEnabled()).toBe(false);
-		}
-		// Explicit opt-in, in any casing or padding.
-		for (const value of ["on", "1", "true", "ON", " True "]) {
-			process.env.PI_MEMORY_CAPTURE_CORRECTIONS = value;
-			expect(captureCorrectionsEnabled()).toBe(true);
-		}
-	});
-});
-
 describe("memory_search tool", () => {
 	let tools: Record<string, any>;
 
@@ -1439,36 +1409,6 @@ describe("lifecycle hooks", () => {
 		expect(result.systemPrompt).toContain("memory_write");
 		expect(result.systemPrompt).toContain("memory_search");
 		expect(result.systemPrompt).toContain("scratchpad");
-	});
-
-	test("before_agent_start captures no correction while capture is off", async () => {
-		const saved = process.env.PI_MEMORY_CAPTURE_CORRECTIONS;
-		delete process.env.PI_MEMORY_CAPTURE_CORRECTIONS;
-		try {
-			const event = { prompt: "不对，应该用 pnpm 而不是 npm", systemPrompt: "" };
-			const result = await hooks.before_agent_start(event, createMockCtx());
-			const daily = dailyPath(todayStr());
-			const contents = fs.existsSync(daily) ? fs.readFileSync(daily, "utf-8") : "";
-			expect(contents).not.toContain("#correction");
-			expect(result?.systemPrompt ?? "").not.toContain("Correction captured");
-		} finally {
-			if (saved === undefined) delete process.env.PI_MEMORY_CAPTURE_CORRECTIONS;
-			else process.env.PI_MEMORY_CAPTURE_CORRECTIONS = saved;
-		}
-	});
-
-	test("before_agent_start captures a correction when capture is on", async () => {
-		const saved = process.env.PI_MEMORY_CAPTURE_CORRECTIONS;
-		process.env.PI_MEMORY_CAPTURE_CORRECTIONS = "on";
-		try {
-			const event = { prompt: "不对，应该用 pnpm 而不是 npm", systemPrompt: "" };
-			const result = await hooks.before_agent_start(event, createMockCtx());
-			expect(fs.readFileSync(dailyPath(todayStr()), "utf-8")).toContain("#correction");
-			expect(result.systemPrompt).toContain("Correction captured");
-		} finally {
-			if (saved === undefined) delete process.env.PI_MEMORY_CAPTURE_CORRECTIONS;
-			else process.env.PI_MEMORY_CAPTURE_CORRECTIONS = saved;
-		}
 	});
 
 	// -- session_shutdown --

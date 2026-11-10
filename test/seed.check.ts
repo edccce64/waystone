@@ -16,7 +16,6 @@ const sessionsDir = path.join(tmpRoot, "sessions");
 process.env.PI_MEMORY_DIR = memoryDir;
 process.env.PI_MEMORY_LEDGER = "on";
 process.env.PI_MEMORY_STALE_CHECK = "off";
-process.env.PI_MEMORY_CAPTURE_CORRECTIONS = "on";
 
 fs.mkdirSync(path.join(memoryDir, "daily"), { recursive: true });
 fs.mkdirSync(path.join(memoryDir, "recovery"), { recursive: true });
@@ -70,9 +69,6 @@ const {
 	_resetSupersedes,
 	collectSeedMessages,
 	looksLikeSecret,
-	detectCorrection,
-	recordCorrection,
-	todayStr,
 	filterSuperseded,
 	findConflictCandidates,
 	buildAuditReport,
@@ -133,46 +129,6 @@ check("flags obvious credentials and passes prose", () => {
 	assert.ok(looksLikeSecret("Authorization: Bearer abcdefghijklmn"));
 	assert.ok(!looksLikeSecret("用 pnpm 不用 npm"));
 	assert.ok(!looksLikeSecret("入口在 src/api/routes.ts"));
-});
-
-// --- 3. correction detection ----------------------------------------------
-
-check("detects corrections in both languages", () => {
-	assert.ok(detectCorrection("不对，应该用 pnpm 而不是 npm"));
-	assert.ok(detectCorrection("as I said, use bun not npm"));
-	assert.ok(detectCorrection("no, that's wrong — the entry is src/index.ts"));
-	assert.ok(detectCorrection("别再改那个文件了"));
-});
-
-check("ignores ordinary prompts that merely mention those words", () => {
-	assert.equal(detectCorrection("帮我把这个函数重构一下"), null);
-	assert.equal(detectCorrection("run the tests and report failures"), null);
-	assert.equal(detectCorrection("always run bun test"), null, "an instruction is not a correction");
-	assert.equal(detectCorrection(""), null);
-	assert.equal(detectCorrection(`不对\n\n\`\`\`js\ncode\`\`\``), null, "code blocks are skipped");
-});
-
-check("captures only the correcting sentence", () => {
-	const captured = detectCorrection("先看下 README。不对，应该先跑 bun test 再改代码。");
-	assert.ok(captured);
-	assert.ok(captured.includes("bun test"));
-	assert.ok(!captured.includes("README"), "keeps the correction, not the whole prompt");
-});
-
-check("records a correction once and dedupes repeats", () => {
-	// todayStr() is the extension's own local-calendar day; deriving the name
-	// from toISOString() here would silently drift across a UTC day boundary.
-	const file = path.join(memoryDir, "daily", `${todayStr()}.md`);
-	const stamp = "2026-10-16 12:00:00";
-	assert.equal(recordCorrection("以后都用 pnpm", stamp, "abcd1234"), true, "first write");
-	assert.equal(recordCorrection("以后都用 pnpm", stamp, "abcd1234"), false, "duplicate suppressed");
-	const content = fs.readFileSync(file, "utf-8");
-	assert.match(content, /#correction 以后都用 pnpm/);
-	assert.equal(content.match(/#correction/g)?.length, 1);
-});
-
-check("refuses to record a correction containing a credential", () => {
-	assert.equal(recordCorrection("key 是 sk-aaaaaaaaaaaaaaaaaaaa", "2026-10-16 12:00:00", "abcd1234"), false);
 });
 
 // --- 4. supersede ----------------------------------------------------------

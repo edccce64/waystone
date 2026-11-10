@@ -40,11 +40,6 @@ follows [Semantic Versioning](https://semver.org/).
   order is one-way, and `pi.extensions` still points at `./index.ts`, so
   installing is unchanged. Command arguments, messages and `.audit` formats
   are untouched.
-- Correction capture is off by default. Set
-  `PI_MEMORY_CAPTURE_CORRECTIONS=on` to turn it on: a prompt that reads like a
-  correction is then appended to today's daily log with the `#correction` tag
-  and shown to the model in the system prompt. Unset, the daily log stays
-  free of prompts that merely look like corrections.
 - The stale-path check is on by default. A memory entry that mentions a file
   which no longer exists is annotated in the injected context. Set
   `PI_MEMORY_STALE_CHECK=off` to turn it off.
@@ -52,6 +47,15 @@ follows [Semantic Versioning](https://semver.org/).
   `topics/` holds a file.
 - Entries that carry a verification tag are reordered, so the unverified ones
   sink to the end of the injected block.
+
+### Removed
+
+- Correction capture. Detecting a correction in the raw prompt, appending it
+  to the daily log, and injecting a matching system-prompt block are gone,
+  together with the environment switch that enabled them. In practice it fired
+  on ordinary requests that happened to contain a matching phrase, and each
+  such turn paid for a daily-log write and a system-prompt rewrite. The model
+  is still told to persist durable rules with `memory_write`.
 
 ### Fixed
 
