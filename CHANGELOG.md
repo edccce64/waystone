@@ -30,6 +30,13 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The extension is split across five modules: `memory-core.ts` (paths, files,
+  locks, sidecars, verification, context assembly), `search.ts` (qmd),
+  `maintenance.ts` (audit, supersede, `/seed`, `/dream`, lifecycle hooks),
+  `commands.ts` (commands and tools) and `index.ts` (wiring only). The import
+  order is one-way, and `pi.extensions` still points at `./index.ts`, so
+  installing is unchanged. Command arguments, messages and `.audit` formats
+  are untouched.
 - Correction capture is off by default. Set
   `PI_MEMORY_CAPTURE_CORRECTIONS=on` to turn it on: a prompt that reads like a
   correction is then appended to today's daily log with the `#correction` tag

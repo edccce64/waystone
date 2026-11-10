@@ -2,10 +2,16 @@
 
 ## Project Structure & Module Organization
 
-- `index.ts`: the entire pi extension (single-file, TypeScript loaded directly by `pi`)
+- `index.ts`: the entry point. It only wires the modules together; `pi.extensions` points here.
+- `memory-core.ts`: paths, file I/O, the write lock, JSON sidecars, verification status, and the injected-context builder
+- `search.ts`: qmd discovery, collection setup, retrieval
+- `maintenance.ts`: audit ledger, supersedes, `/seed` and `/dream` pipelines, lifecycle hooks
+- `commands.ts`: the slash commands and the tools
 - `test/e2e.ts`: end-to-end tests that invoke `pi` as a subprocess
 - `README.md`: user-facing install/usage docs
 - `package.json`: metadata + **peer** dependencies (provided by the pi runtime)
+
+Import order is one-way: `memory-core` <- `search` <- `maintenance` <- `commands` <- `index`. A new module edge that points backwards needs a design change, not an import.
 
 Runtime data lives outside the repo under `~/.pi/agent/memory/` (`MEMORY.md`, `SCRATCHPAD.md`, `daily/YYYY-MM-DD.md`).
 
@@ -29,7 +35,7 @@ Runtime data lives outside the repo under `~/.pi/agent/memory/` (`MEMORY.md`, `S
 
 ## Coding Style & Naming Conventions
 
-- Keep `index.ts` self-contained; avoid adding a build step unless absolutely necessary.
+- Keep `index.ts` wiring-only and the modules dependency-ordered as above; avoid adding a build step unless absolutely necessary. Relative imports use the `.js` specifier (NodeNext); `pi` loads them through its TypeScript loader.
 - Match existing formatting: tabs for indentation, semicolons, and double quotes.
 - Naming: `camelCase` for functions, `PascalCase` for types, `SCREAMING_SNAKE_CASE` for constants; tool names remain `snake_case` (e.g. `memory_write`).
 

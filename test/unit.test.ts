@@ -133,7 +133,13 @@ function createShutdownCtx(options?: {
 
 describe("runtime package scope", () => {
 	test("uses the official @earendil-works Pi packages", () => {
-		const source = fs.readFileSync(new URL("../index.ts", import.meta.url), "utf-8");
+		// The extension is split across modules; every one of them has to use the
+		// official packages, so the check reads all of them.
+		const source = fs
+			.readdirSync(new URL("..", import.meta.url))
+			.filter((name) => name.endsWith(".ts"))
+			.map((name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), "utf-8"))
+			.join("\n");
 		const claudeGuide = fs.readFileSync(new URL("../CLAUDE.md", import.meta.url), "utf-8");
 		const bunLock = fs.readFileSync(new URL("../bun.lock", import.meta.url), "utf-8");
 		const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"));
