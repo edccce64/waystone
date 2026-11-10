@@ -11,7 +11,6 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { AuditRow, DreamResult, SeedResult, SeedTarget } from "./maintenance.js";
 import {
-	AUDIT_CHARS_PER_TOKEN,
 	AUDIT_MAX_REPORT_FILES,
 	activeSupersedes,
 	applyDreamActions,
@@ -365,8 +364,6 @@ export function buildAuditReport(cwd: string): { markdown: string; summary: stri
 	const duplicates = [...byBody.values()].filter((group) => group.length > 1);
 	const conflicts = findConflictCandidates(live);
 
-	const totalChars = ledger.injectedChars;
-	const avgChars = ledger.injections > 0 ? Math.round(totalChars / ledger.injections) : 0;
 	const knownRows = live.filter((r) => r.injections > 0).length;
 	// The denominator is the part of memory that is injected at all.
 	const eligibleCount = live.filter((r) => r.eligible).length;
@@ -379,12 +376,6 @@ export function buildAuditReport(cwd: string): { markdown: string; summary: stri
 		`- Memory entries on disk: **${rows.length}**${supersededKeys.size ? ` (**${supersededKeys.size} superseded**, kept on disk but not injected)` : ""}`,
 	);
 	lines.push(`- Context injections recorded: **${ledger.injections}**`);
-	lines.push(
-		`- Average injected per snapshot: **${avgChars} chars (~${Math.round(avgChars / AUDIT_CHARS_PER_TOKEN)} tokens)**`,
-	);
-	lines.push(
-		`- Lifetime injected: **${totalChars} chars (~${Math.round(totalChars / AUDIT_CHARS_PER_TOKEN)} tokens)**`,
-	);
 	lines.push(`- Entries that reached the model at least once: **${knownRows}/${eligibleCount}**`);
 	lines.push(`- Stale-path detection: \`${staleMode()}\``);
 	lines.push("");
@@ -511,8 +502,7 @@ export function buildAuditReport(cwd: string): { markdown: string; summary: stri
 
 	const summary =
 		`${rows.length} 条记忆，${neverInjected.length} 条从未注入，` +
-		`${stale.length} 条指向已删除文件，平均每次注入 ${avgChars} 字符` +
-		`(~${Math.round(avgChars / AUDIT_CHARS_PER_TOKEN)} tokens)`;
+		`${stale.length} 条指向已删除文件，${duplicates.length} 条重复`;
 
 	return { markdown: lines.join("\n"), summary };
 }

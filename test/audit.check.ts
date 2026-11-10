@@ -237,15 +237,20 @@ check("report finds stale, duplicate and never-injected entries", () => {
 	assert.match(markdown, /legacy\/old-handler\.js/);
 });
 
-check("report numbers injection cost", () => {
+check("report counts injections but no cost figures", () => {
 	const before = ledgerOnDisk().injections;
 	auditContext(buildMemoryContext(""), projectDir);
 	flushAuditLedger();
 	const after = ledgerOnDisk().injections;
-	const { markdown } = buildAuditReport(projectDir);
+	const { markdown, summary } = buildAuditReport(projectDir);
 	assert.match(markdown, new RegExp(`Context injections recorded: \\*\\*${after}\\*\\*`));
-	assert.match(markdown, /Average injected per snapshot: \*\*\d+ chars \(~\d+ tokens\)/);
 	assert.match(markdown, /Entries that reached the model at least once: \*\*\d+\/5/);
+	// The report no longer estimates what memory costs per turn.
+	assert.doesNotMatch(markdown, /Average injected per snapshot/);
+	assert.doesNotMatch(markdown, /Lifetime injected/);
+	assert.doesNotMatch(markdown, /tokens/);
+	assert.doesNotMatch(summary, /字符|tokens/);
+	assert.match(summary, /条从未注入/);
 	assert.ok(after === before + 1);
 });
 
