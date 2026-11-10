@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-memory-project-"));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "waystone-project-"));
 const memoryDir = path.join(tmpRoot, "memory");
 const projectDir = path.join(tmpRoot, "my-repo");
 

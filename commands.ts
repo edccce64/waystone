@@ -196,7 +196,7 @@ async function runSeed(args: string, ctx: ExtensionCommandContext): Promise<void
 
 	const destination = target === "project" ? projectMemoryFile(ctx.cwd) : MEMORY_FILE;
 	ctx.ui.notify(
-		`pi-memory /seed: mining ${messages.length} prompt(s) from the last ${days} day(s) across ${result.batches} background batch(es). This returns now; you will be notified when it finishes, then run /seed apply. Result will target ${target} memory (${destination}).`,
+		`waystone /seed: mining ${messages.length} prompt(s) from the last ${days} day(s) across ${result.batches} background batch(es). This returns now; you will be notified when it finishes, then run /seed apply. Result will target ${target} memory (${destination}).`,
 		"info",
 	);
 

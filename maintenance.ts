@@ -173,10 +173,7 @@ function resolveExitSummaryModel(ctx: ExtensionContext): ExtensionContext["model
 
 	if (ctx.hasUI) {
 		try {
-			ctx.ui.notify(
-				`pi-memory: PI_MEMORY_EXIT_SUMMARY_MODEL "${spec}" not resolved; using session model`,
-				"warning",
-			);
+			ctx.ui.notify(`waystone: PI_MEMORY_EXIT_SUMMARY_MODEL "${spec}" not resolved; using session model`, "warning");
 		} catch {
 			/* UI may already be tearing down during shutdown */
 		}
@@ -1277,7 +1274,7 @@ export async function extractAllBatches(
 		// Persist after every batch. Extraction runs detached from the command,
 		// so a session that quits mid-run must not lose what it already paid for.
 		if (seedWasApplied()) {
-			notifySafe(ui, "pi-memory /seed: the result was applied, stopping.", "info");
+			notifySafe(ui, "waystone /seed: the result was applied, stopping.", "info");
 			return;
 		}
 		try {
@@ -1288,7 +1285,7 @@ export async function extractAllBatches(
 
 		notifySafe(
 			ui,
-			`pi-memory /seed: ${done}/${messages.length} prompts processed, ${result.candidates.length} candidate(s) so far.`,
+			`waystone /seed: ${done}/${messages.length} prompts processed, ${result.candidates.length} candidate(s) so far.`,
 			"info",
 		);
 	}
@@ -1298,7 +1295,7 @@ export async function extractAllBatches(
 	result.skippedExisting = skipped;
 
 	if (seedWasApplied()) {
-		notifySafe(ui, "pi-memory /seed: the result was applied, stopping.", "info");
+		notifySafe(ui, "waystone /seed: the result was applied, stopping.", "info");
 		return;
 	}
 
@@ -1308,8 +1305,8 @@ export async function extractAllBatches(
 		notifySafe(
 			ui,
 			result.skippedExisting > 0
-				? `pi-memory /seed done: all ${result.skippedExisting} candidate(s) already in memory. Nothing to do.`
-				: "pi-memory /seed done: no durable candidates found.",
+				? `waystone /seed done: all ${result.skippedExisting} candidate(s) already in memory. Nothing to do.`
+				: "waystone /seed done: no durable candidates found.",
 			"info",
 		);
 		return;
@@ -1327,7 +1324,7 @@ export async function extractAllBatches(
 	const failures = result.failedBatches.length ? ` (${result.failedBatches.length} batch(es) failed)` : "";
 	notifySafe(
 		ui,
-		`pi-memory /seed done${failures}: ${result.candidates.length} candidate(s), ${result.skippedExisting} already known.\n${preview}\nRun /seed apply to write them, /seed status for all.`,
+		`waystone /seed done${failures}: ${result.candidates.length} candidate(s), ${result.skippedExisting} already known.\n${preview}\nRun /seed apply to write them, /seed status for all.`,
 		"info",
 	);
 }

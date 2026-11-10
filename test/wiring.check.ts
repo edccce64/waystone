@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-memory-wiring-"));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "waystone-wiring-"));
 const memoryDir = path.join(tmpRoot, "memory");
 fs.mkdirSync(memoryDir, { recursive: true });
 process.env.PI_MEMORY_DIR = memoryDir;

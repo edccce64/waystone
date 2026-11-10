@@ -25,6 +25,12 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Renamed to Waystone. The project, the npm package and the repository are
+  `waystone` now; the README was rewritten as a project home page. What an
+  existing install depends on is unchanged: the `PI_MEMORY_*` environment
+  variables, the `~/.pi/agent/memory/` paths, the `.pi/memory/` project tier
+  and the default qmd collection name `pi-memory` all stay as they are, so
+  nothing has to be migrated.
 - The extension is split across five modules: `memory-core.ts` (paths, files,
   locks, sidecars, verification, context assembly), `search.ts` (qmd),
   `maintenance.ts` (audit ledger, supersede, `/seed`, lifecycle hooks),
@@ -310,7 +316,7 @@ follows [Semantic Versioning](https://semver.org/).
 - qmd integration for keyword, semantic, and hybrid search.
 - Debounced background `qmd update` after writes.
 
-[Unreleased]: https://github.com/jayzeng/pi-memory/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/edccce64/waystone/commits/main
 [0.4.0]: https://github.com/jayzeng/pi-memory/compare/v0.3.14...v0.4.0
 [0.3.14]: https://github.com/jayzeng/pi-memory/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/jayzeng/pi-memory/compare/v0.3.12...v0.3.13

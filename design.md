@@ -1,4 +1,4 @@
-# pi-memory: Designing Memory for Coding Agents
+# Waystone: Designing Memory for Coding Agents
 
 ## The Problem
 
@@ -40,7 +40,7 @@ tools it already knows how to use.
 
 **Caveat:** This is one benchmark, two systems, one task type. We cite it as
 motivation, not proof. Our own eval (described below) is designed to test whether
-this holds for pi-memory specifically.
+this holds for Waystone specifically.
 
 ## Design Philosophy
 
@@ -184,7 +184,7 @@ searchable.
 
 Context compaction is the silent killer of agent memory. When the context window
 fills and old messages are dropped, the agent loses awareness of what it was
-doing. pi-memory addresses this with automatic handoff capture:
+doing. Waystone addresses this with automatic handoff capture:
 
 ```
   session_before_compact fires
@@ -410,7 +410,7 @@ after compaction vs ignoring it as noise.
 
 ## Conclusion
 
-pi-memory is a bet on simplicity. Markdown files instead of databases. Full-text
+Waystone is a bet on simplicity. Markdown files instead of databases. Full-text
 search instead of vector indexes. Content conventions instead of metadata schemas.
 Automatic injection instead of manual retrieval.
 

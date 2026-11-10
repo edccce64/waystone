@@ -1,5 +1,5 @@
 /**
- * End-to-end tests for pi-memory extension.
+ * End-to-end tests for the Waystone extension.
  *
  * Run:   bun test/e2e.ts
  *    or: npx tsx test/e2e.ts
@@ -490,14 +490,14 @@ async function testDailyLog() {
 
 	await runTool("memory_write", {
 		target: "daily",
-		content: "Worked on pi-memory extension today",
+		content: "Worked on the Waystone extension today",
 	});
 
 	const after = todayStr();
 	const dailyFile = path.join(DAILY_DIR, `${after}.md`);
 	assert(fs.existsSync(dailyFile), `Daily log file not created: ${dailyFile}`);
 	const content = fs.readFileSync(dailyFile, "utf-8");
-	assert(content.includes("pi-memory extension"), `Daily log missing text. Content: ${content.slice(0, 200)}`);
+	assert(content.includes("Waystone extension"), `Daily log missing text. Content: ${content.slice(0, 200)}`);
 	if (before !== after) {
 		// The run crossed midnight. The file that was there before must still
 		// be restored at the end.
@@ -656,7 +656,7 @@ function testHandoffSurvivesToNextSession() {
 // ---------------------------------------------------------------------------
 
 async function main() {
-	console.log("\n\x1b[1mpi-memory end-to-end tests\x1b[0m\n");
+	console.log("\n\x1b[1mWaystone end-to-end tests\x1b[0m\n");
 
 	// Check extension file exists
 	if (!fs.existsSync(EXTENSION_PATH)) {

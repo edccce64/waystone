@@ -16,7 +16,7 @@ bun test/e2e.ts
 pi -p -e ./index.ts "remember: I prefer dark mode"
 
 # Install into pi
-pi install ./pi-memory
+pi install .
 ```
 
 ## Architecture

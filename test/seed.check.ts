@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-memory-seed-"));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "waystone-seed-"));
 const memoryDir = path.join(tmpRoot, "memory");
 const sessionsDir = path.join(tmpRoot, "sessions");
 

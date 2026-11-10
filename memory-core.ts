@@ -447,7 +447,7 @@ export function scratchpadClearDone(content: string): { content: string; removed
 
 /**
  * Remove every generated entry containing `match` (case-insensitive) from
- * `content`. Generated entries start at a pi-memory timestamp comment and end
+ * `content`. Generated entries start at a Waystone timestamp comment and end
  * at the next one, so multi-paragraph writes are removed as a unit. Content
  * before the first generated entry falls back to blank-line paragraph blocks.
  * Returns the surviving content and complete removed entries.

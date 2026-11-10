@@ -1,5 +1,5 @@
 /**
- * Unit tests for pi-memory extension.
+ * Unit tests for the Waystone extension.
  *
  * Run:   bun test test/unit.test.ts
  *
@@ -64,7 +64,7 @@ import {
 let tmpDir: string;
 
 function setupTmpDir() {
-	tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-memory-test-"));
+	tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "waystone-test-"));
 	_setBaseDir(tmpDir);
 }
 
@@ -328,7 +328,7 @@ describe("buildQmdSpawn", () => {
 describe("resolveQmdJsPath", () => {
 	let scratchDir: string;
 	beforeEach(() => {
-		scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-memory-qmd-resolve-"));
+		scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "waystone-qmd-resolve-"));
 		_resetQmdJsResolutionForTest();
 	});
 	afterEach(() => {
@@ -1147,7 +1147,7 @@ describe("memory_read tool", () => {
 	test("read daily rejects path traversal in date", async () => {
 		const outsideBase = path.join(
 			os.tmpdir(),
-			`pi-memory-outside-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+			`waystone-outside-${Date.now()}-${Math.random().toString(16).slice(2)}`,
 		);
 		const outsideFile = `${outsideBase}.md`;
 		fs.writeFileSync(outsideFile, "TOP SECRET", "utf-8");

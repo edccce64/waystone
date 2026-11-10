@@ -22,14 +22,14 @@ if (process.env.PI_MEMORY_E2E_QMD === "0") {
 	process.exit(0);
 }
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-memory-qmd-"));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "waystone-qmd-"));
 const memoryDir = path.join(tmpRoot, "memory");
 fs.mkdirSync(path.join(memoryDir, "daily"), { recursive: true });
 process.env.PI_MEMORY_DIR = memoryDir;
 process.env.PI_MEMORY_LEDGER = "off";
 process.env.PI_MEMORY_STALE_CHECK = "off";
 
-const collection = `pi-memory-e2e-${process.pid.toString(36)}`;
+const collection = `waystone-e2e-${process.pid.toString(36)}`;
 process.env.PI_MEMORY_QMD_COLLECTION = collection;
 
 const mod = await import("../index.ts");

@@ -1,10 +1,11 @@
 {
-	"name": "pi-memory",
+	"name": "waystone",
 	"version": "0.4.2",
-	"description": "Pi coding agent extension for memory with qmd-powered semantic search across daily logs, long-term memory, and scratchpad",
+	"description": "Memory for the pi coding agent: plain-markdown memory, a hard context budget, KV-cache-stable injection and an audit trail, with qmd-backed search",
 	"main": "index.ts",
 	"type": "module",
 	"keywords": [
+		"waystone",
 		"pi",
 		"pi-coding-agent",
 		"pi-package",
@@ -23,12 +24,12 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/jayzeng/pi-memory.git"
+		"url": "git+https://github.com/edccce64/waystone.git"
 	},
 	"bugs": {
-		"url": "https://github.com/jayzeng/pi-memory/issues"
+		"url": "https://github.com/edccce64/waystone/issues"
 	},
-	"homepage": "https://github.com/jayzeng/pi-memory#readme",
+	"homepage": "https://github.com/edccce64/waystone#readme",
 	"files": [
 		"index.ts",
 		"scripts",

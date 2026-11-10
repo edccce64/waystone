@@ -87,7 +87,7 @@ function writeFixture(dir: string): void {
 	);
 }
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-memory-perf-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "waystone-perf-"));
 _setBaseDir(path.join(tmp, "memory"));
 ensureDirs();
 writeFixture(path.join(tmp, "memory"));

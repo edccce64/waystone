@@ -1,5 +1,5 @@
 /**
- * pi-memory: memory extension with qmd-powered search.
+ * Waystone: memory for the pi coding agent.
  *
  * This file is the entry point and nothing else: it wires the modules
  * together. Everything it exports is re-exported from them, so tests and

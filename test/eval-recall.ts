@@ -1,5 +1,5 @@
 /**
- * Recall effectiveness eval for pi-memory selective injection.
+ * Recall effectiveness eval for Waystone selective injection.
  *
  * Seeds memory with a diverse corpus, then runs recall questions in two modes:
  *   A) With selective injection (default)
@@ -581,7 +581,7 @@ function printResults(allRuns: QuestionResult[][]) {
 // ---------------------------------------------------------------------------
 
 function main() {
-	console.log("\n\x1b[1mpi-memory recall effectiveness eval\x1b[0m\n");
+	console.log("\n\x1b[1mWaystone recall effectiveness eval\x1b[0m\n");
 	console.log(`Extension: ${EXTENSION_PATH}`);
 	console.log(`Memory dir: ${MEMORY_DIR}`);
 	console.log(`Corpus: ${CORPUS.length} entries, ${QUESTIONS.length} questions, ${EVAL_RUNS} run(s)`);

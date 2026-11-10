@@ -18,7 +18,7 @@ Runtime data lives outside the repo under `~/.pi/agent/memory/` (`MEMORY.md`, `S
 
 ## Activity Tracking (Required)
 
-- Track all work sessions by writing a short entry to the pi-memory daily log using `memory_write` (target: `daily`).
+- Track all work sessions by writing a short entry to the Waystone daily log using `memory_write` (target: `daily`).
 - Summaries should include what changed, files touched, and any notable decisions.
 - Use the scratchpad tool for follow-ups or TODOs discovered during work.
 

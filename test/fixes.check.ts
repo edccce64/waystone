@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-memory-fixes-"));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "waystone-fixes-"));
 const memoryDir = path.join(tmpRoot, "memory");
 const sessionsDir = path.join(tmpRoot, "sessions");
 const projectDir = path.join(tmpRoot, "project");
