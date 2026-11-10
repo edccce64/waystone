@@ -30,10 +30,11 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Correction capture is on by default. A prompt that reads like a correction
-  is appended to today's daily log with the `#correction` tag and shown to the
-  model in the system prompt. Set `PI_MEMORY_CAPTURE_CORRECTIONS=off` to turn
-  it off.
+- Correction capture is off by default. Set
+  `PI_MEMORY_CAPTURE_CORRECTIONS=on` to turn it on: a prompt that reads like a
+  correction is then appended to today's daily log with the `#correction` tag
+  and shown to the model in the system prompt. Unset, the daily log stays
+  free of prompts that merely look like corrections.
 - The stale-path check is on by default. A memory entry that mentions a file
   which no longer exists is annotated in the injected context. Set
   `PI_MEMORY_STALE_CHECK=off` to turn it off.

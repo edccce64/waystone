@@ -3100,9 +3100,16 @@ const CORRECTION_PATTERNS: RegExp[] = [
 
 const CORRECTION_MAX_CHARS = 400;
 
-function captureCorrectionsEnabled(): boolean {
-	const v = (process.env.PI_MEMORY_CAPTURE_CORRECTIONS ?? "on").toLowerCase();
-	return v !== "off" && v !== "0" && v !== "false";
+/**
+ * Off unless the user opts in.
+ *
+ * Capture appends to the daily log and rewrites the system prompt on a
+ * matching turn, so it must be a deliberate choice: a prompt that merely looks
+ * like a correction is not worth that cost by default.
+ */
+export function captureCorrectionsEnabled(): boolean {
+	const v = (process.env.PI_MEMORY_CAPTURE_CORRECTIONS ?? "").trim().toLowerCase();
+	return v === "on" || v === "1" || v === "true";
 }
 
 /** The sentence carrying the correction, or null when the prompt is not one. */

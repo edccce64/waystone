@@ -26,6 +26,7 @@ import {
 	buildMemoryContext,
 	buildQmdEnv,
 	buildQmdSpawn,
+	captureCorrectionsEnabled,
 	clampSearchLimit,
 	dailyPath,
 	ensureDirs,
@@ -1264,6 +1265,35 @@ describe("getQmdSearchTimeoutMs", () => {
 		expect(getQmdSearchTimeoutMs({ PI_MEMORY_QMD_SEARCH_TIMEOUT_MS: "0.5" })).toBe(60_000);
 		expect(getQmdSearchTimeoutMs({ PI_MEMORY_QMD_SEARCH_TIMEOUT_MS: "0" })).toBe(60_000);
 		expect(getQmdSearchTimeoutMs({ PI_MEMORY_QMD_SEARCH_TIMEOUT_MS: "invalid" })).toBe(60_000);
+	});
+});
+
+describe("captureCorrectionsEnabled", () => {
+	let saved: string | undefined;
+
+	beforeEach(() => {
+		saved = process.env.PI_MEMORY_CAPTURE_CORRECTIONS;
+	});
+
+	afterEach(() => {
+		if (saved === undefined) delete process.env.PI_MEMORY_CAPTURE_CORRECTIONS;
+		else process.env.PI_MEMORY_CAPTURE_CORRECTIONS = saved;
+	});
+
+	test("stays off unless the variable explicitly enables it", () => {
+		// Default: nothing is captured, so the daily log does not collect
+		// prompts that merely look like corrections.
+		delete process.env.PI_MEMORY_CAPTURE_CORRECTIONS;
+		expect(captureCorrectionsEnabled()).toBe(false);
+		for (const value of ["off", "0", "false", "", "maybe"]) {
+			process.env.PI_MEMORY_CAPTURE_CORRECTIONS = value;
+			expect(captureCorrectionsEnabled()).toBe(false);
+		}
+		// Explicit opt-in, in any casing or padding.
+		for (const value of ["on", "1", "true", "ON", " True "]) {
+			process.env.PI_MEMORY_CAPTURE_CORRECTIONS = value;
+			expect(captureCorrectionsEnabled()).toBe(true);
+		}
 	});
 });
 
