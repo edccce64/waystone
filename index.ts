@@ -2488,7 +2488,9 @@ function readDreamResult(): DreamResult | null {
 
 function writeDreamResult(result: DreamResult): void {
 	fs.mkdirSync(AUDIT_DIR, { recursive: true });
-	fs.writeFileSync(dreamResultFile(), `${JSON.stringify(result, null, 2)}\n`, "utf-8");
+	// Atomic like every other sidecar: a crash mid-write must not leave a
+	// truncated result that /dream apply then refuses to read.
+	writeJsonAtomic(dreamResultFile(), result);
 }
 
 const DREAM_ERROR_MARKERS = /error|failed|failure|ENOENT|ECONNRESET|ETIMEDOUT|exception|not found|404|500/i;
