@@ -419,5 +419,7 @@ complex architectures — at least for retrieval tasks. Our testing verifies the
 mechanics work. The open question is whether selective injection meaningfully
 improves recall in practice, and the eval infrastructure exists to answer it.
 
-Total implementation: ~1,100 lines of TypeScript in a single file. Zero
-dependencies beyond the pi runtime and optional qmd.
+Total implementation: 5,046 lines of TypeScript across five modules — `index.ts`
+(30 lines, wiring only), `memory-core.ts` (1,028), `search.ts` (752),
+`maintenance.ts` (1,762), `commands.ts` (1,474). Zero dependencies beyond the pi
+runtime and optional qmd.

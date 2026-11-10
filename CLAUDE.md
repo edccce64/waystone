@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A memory extension for the [pi coding agent](https://github.com/earendil-works/pi). It provides persistent memory across coding sessions via plain markdown files, with optional semantic search powered by [qmd](https://github.com/tobi/qmd). Single-file extension (`index.ts`) — no build step, pi loads TypeScript directly.
+A memory extension for the [pi coding agent](https://github.com/earendil-works/pi). It provides persistent memory across coding sessions via plain markdown files, with optional semantic search powered by [qmd](https://github.com/tobi/qmd). The extension is five modules — `index.ts` only wires them together, while `memory-core.ts`, `search.ts`, `maintenance.ts` and `commands.ts` each own one area — and there is still no build step: pi loads the TypeScript directly.
 
 ## Commands
 
@@ -21,10 +21,10 @@ pi install .
 
 ## Architecture
 
-The entire extension is `index.ts` — a single default export function that receives pi's `ExtensionAPI` and:
+The entry point is the default export in `index.ts`. It receives pi's `ExtensionAPI` and calls four `register*` functions — `registerLifecycleHooks`, `registerSearchTools`, `registerCommands` and `registerTools` — which wire up the hooks, tools and commands:
 
-1. **Registers lifecycle hooks**: `session_start` (detect qmd), `session_shutdown` (cleanup), `before_agent_start` (inject memory context into system prompt every turn), `session_before_compact` (warn about compaction)
-2. **Registers 4 tools**: `memory_write`, `memory_read`, `scratchpad`, `memory_search`
+1. **Registers lifecycle hooks**: `session_start` (detect qmd), `session_shutdown` (cleanup), `input` (detect `/quit`), `before_agent_start` (inject memory context into system prompt every turn), `session_before_compact` (write a handoff entry and refresh the snapshot)
+2. **Registers 7 tools**: `memory_write`, `memory_forget`, `memory_restore`, `memory_read`, `scratchpad`, `memory_search`, `memory_status`
 3. **Manages files under `~/.pi/agent/memory/`**: `MEMORY.md` (long-term), `SCRATCHPAD.md` (checklist), `daily/<YYYY-MM-DD>.md` (append-only logs)
 
 Key design patterns:
