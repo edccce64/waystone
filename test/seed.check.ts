@@ -243,6 +243,14 @@ check("restoring brings an entry back", () => {
 	assert.ok(filtered.context.includes("Use npm as the package manager"));
 });
 
+check("a malformed sidecar reads as empty instead of throwing", () => {
+	fs.writeFileSync(path.join(memoryDir, ".audit", "supersedes.json"), "{ not json", "utf-8");
+	_resetSupersedes();
+	const filtered = filterSuperseded(buildMemoryContext(""));
+	assert.equal(filtered.dropped, 0, "a corrupt chain must not retire anything");
+	assert.ok(filtered.context.includes("Use npm as the package manager"), "every entry stays");
+});
+
 // --- 5. audit still works with the new layer -------------------------------
 
 check("audit ledger and report survive the new wiring", () => {

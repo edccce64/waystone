@@ -76,6 +76,9 @@ follows [Semantic Versioning](https://semver.org/).
 - `verified.json` and `supersedes.json` are written through a temporary file
   and a rename. A crash in the middle of a write used to leave half a file,
   which the reader silently treated as an empty state.
+- Every sidecar now shares one reader and one atomic writer, including the
+  `/dream` and `/seed` result files. A crash in the middle of a write can no
+  longer leave a truncated result that the next command refuses to read.
 - `/seed apply` no longer writes into the repository that happens to be open.
   A project run belongs to the repository it was mined in, and the run is
   refused elsewhere.

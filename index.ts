@@ -1068,29 +1068,25 @@ function verifiedStateFile(): string {
 	return path.join(AUDIT_DIR, "verified.json");
 }
 
+/** Shape check only: the sidecar is a map of key -> record. */
+function asVerifiedMap(value: unknown): Record<string, VerifiedRecord> | null {
+	if (!value || typeof value !== "object") return null;
+	return value as Record<string, VerifiedRecord>;
+}
+
 function readVerifiedState(): Record<string, VerifiedRecord> {
+	const file = verifiedStateFile();
 	// The sidecar is read on every injection, so the parsed copy is kept and
 	// refreshed when the file changes.
-	const mtime = fileMtime(verifiedStateFile());
+	const mtime = fileMtime(file);
 	if (verifiedStateCache && verifiedStateCacheMtime === mtime) return verifiedStateCache;
 	verifiedStateCacheMtime = mtime;
-	const raw = readFileSafe(verifiedStateFile());
-	if (!raw) {
-		verifiedStateCache = {};
-		return verifiedStateCache;
-	}
-	try {
-		const parsed = JSON.parse(raw);
-		verifiedStateCache = parsed && typeof parsed === "object" ? (parsed as Record<string, VerifiedRecord>) : {};
-	} catch {
-		verifiedStateCache = {};
-	}
+	verifiedStateCache = readJsonSidecar(file, asVerifiedMap) ?? {};
 	return verifiedStateCache;
 }
 
 export function writeVerifiedState(state: Record<string, VerifiedRecord>): void {
-	fs.mkdirSync(AUDIT_DIR, { recursive: true });
-	writeJsonAtomic(verifiedStateFile(), state);
+	writeJsonSidecar(verifiedStateFile(), state);
 	verifiedStateCache = state;
 	verifiedStateCacheMtime = fileMtime(verifiedStateFile());
 }
@@ -1233,6 +1229,29 @@ export function writeJsonAtomic(target: string, value: unknown): void {
 	const tmp = `${target}.tmp`;
 	fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
 	fs.renameSync(tmp, target);
+}
+
+/**
+ * Read a JSON sidecar.
+ *
+ * Every sidecar is derived state that can be rebuilt, so a missing, unparsable
+ * or malformed file reads as null instead of throwing. `parse` returns the
+ * value shaped for its caller, or null when the shape is not trustworthy.
+ */
+function readJsonSidecar<T>(file: string, parse: (value: unknown) => T | null): T | null {
+	const raw = readFileSafe(file);
+	if (!raw) return null;
+	try {
+		return parse(JSON.parse(raw) as unknown);
+	} catch {
+		return null;
+	}
+}
+
+/** Write a JSON sidecar atomically. Every sidecar write goes through here. */
+function writeJsonSidecar(file: string, value: unknown): void {
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	writeJsonAtomic(file, value);
 }
 
 /**
@@ -1677,45 +1696,37 @@ function supersedesFile(): string {
 	return path.join(AUDIT_DIR, "supersedes.json");
 }
 
+/** Keep only the entries that carry the two required fields. */
+function asSupersedeMap(value: unknown): SupersedeMap | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const out: SupersedeMap = {};
+	for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+		const record = entry as Partial<SupersedeRecord> | null;
+		if (!record || typeof record.by !== "string" || typeof record.at !== "string") continue;
+		out[key] = {
+			by: record.by,
+			at: record.at,
+			reason: typeof record.reason === "string" ? record.reason : undefined,
+		};
+	}
+	return out;
+}
+
 function readSupersedes(): SupersedeMap {
+	const file = supersedesFile();
 	// Another session may have changed the chain. The timestamp says whether
 	// the cached copy is still current.
-	const mtime = fileMtime(supersedesFile());
+	const mtime = fileMtime(file);
 	if (supersedesCache && supersedesCacheMtime === mtime) return supersedesCache;
 	supersedesCacheMtime = mtime;
-	const raw = readFileSafe(supersedesFile());
-	if (!raw) {
-		supersedesCache = {};
-		return supersedesCache;
-	}
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			supersedesCache = {};
-		} else {
-			const out: SupersedeMap = {};
-			for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-				const record = value as Partial<SupersedeRecord> | null;
-				if (!record || typeof record.by !== "string" || typeof record.at !== "string") continue;
-				out[key] = {
-					by: record.by,
-					at: record.at,
-					reason: typeof record.reason === "string" ? record.reason : undefined,
-				};
-			}
-			supersedesCache = out;
-		}
-	} catch {
-		supersedesCache = {};
-	}
+	supersedesCache = readJsonSidecar(file, asSupersedeMap) ?? {};
 	return supersedesCache;
 }
 
 function writeSupersedes(map: SupersedeMap): void {
 	supersedesCache = map;
 	try {
-		fs.mkdirSync(AUDIT_DIR, { recursive: true });
-		writeJsonAtomic(supersedesFile(), map);
+		writeJsonSidecar(supersedesFile(), map);
 		supersedesCacheMtime = fileMtime(supersedesFile());
 	} catch {
 		// Diagnostics only; a lost supersede map is recoverable by hand.
@@ -2089,16 +2100,14 @@ function seedResultFile(): string {
 	return path.join(AUDIT_DIR, "seed-result.json");
 }
 
+/** A finished run is only trusted when it carries its candidate list. */
+function asSeedResult(value: unknown): SeedResult | null {
+	if (!value || !Array.isArray((value as Partial<SeedResult>).candidates)) return null;
+	return value as SeedResult;
+}
+
 function readSeedResult(): SeedResult | null {
-	const raw = readFileSafe(seedResultFile());
-	if (!raw) return null;
-	try {
-		const parsed = JSON.parse(raw) as Partial<SeedResult>;
-		if (!parsed || !Array.isArray(parsed.candidates)) return null;
-		return parsed as SeedResult;
-	} catch {
-		return null;
-	}
+	return readJsonSidecar(seedResultFile(), asSeedResult);
 }
 
 function notifySafe(ui: ExtensionCommandContext["ui"], message: string, level: "info" | "warning"): void {
@@ -2139,8 +2148,7 @@ async function extractAllBatches(
 				return;
 			}
 			try {
-				fs.mkdirSync(AUDIT_DIR, { recursive: true });
-				fs.writeFileSync(seedResultFile(), `${JSON.stringify(result, null, 2)}\n`, "utf-8");
+				writeJsonSidecar(seedResultFile(), result);
 			} catch {
 				// Non-fatal; the final write below still tries.
 			}
@@ -2161,8 +2169,7 @@ async function extractAllBatches(
 			return;
 		}
 
-		fs.mkdirSync(AUDIT_DIR, { recursive: true });
-		fs.writeFileSync(seedResultFile(), `${JSON.stringify(result, null, 2)}\n`, "utf-8");
+		writeJsonSidecar(seedResultFile(), result);
 
 		if (result.candidates.length === 0) {
 			notifySafe(
@@ -2210,8 +2217,7 @@ function seedWasApplied(): boolean {
 
 function markSeedApplied(result: SeedResult): void {
 	try {
-		fs.mkdirSync(AUDIT_DIR, { recursive: true });
-		writeJsonAtomic(seedAppliedFile(), {
+		writeJsonSidecar(seedAppliedFile(), {
 			appliedAt: new Date().toISOString(),
 			candidates: result.candidates.length,
 			target: result.target,
@@ -2474,23 +2480,20 @@ function dreamResultFile(): string {
 	return path.join(AUDIT_DIR, "dream-result.json");
 }
 
+/** A result without an action list is a partial write, not a result. */
+function asDreamResult(value: unknown): DreamResult | null {
+	if (!value || !Array.isArray((value as Partial<DreamResult>).actions)) return null;
+	return value as DreamResult;
+}
+
 function readDreamResult(): DreamResult | null {
-	const raw = readFileSafe(dreamResultFile());
-	if (!raw) return null;
-	try {
-		const parsed = JSON.parse(raw) as Partial<DreamResult>;
-		if (!parsed || !Array.isArray(parsed.actions)) return null;
-		return parsed as DreamResult;
-	} catch {
-		return null;
-	}
+	return readJsonSidecar(dreamResultFile(), asDreamResult);
 }
 
 function writeDreamResult(result: DreamResult): void {
-	fs.mkdirSync(AUDIT_DIR, { recursive: true });
 	// Atomic like every other sidecar: a crash mid-write must not leave a
 	// truncated result that /dream apply then refuses to read.
-	writeJsonAtomic(dreamResultFile(), result);
+	writeJsonSidecar(dreamResultFile(), result);
 }
 
 const DREAM_ERROR_MARKERS = /error|failed|failure|ENOENT|ECONNRESET|ETIMEDOUT|exception|not found|404|500/i;
