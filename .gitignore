@@ -3,3 +3,15 @@ node_modules/
 *.d.ts
 *.map
 .codegraph
+
+# The project memory of this checkout. It is personal and must stay local.
+.pi/
+
+# Local diagnostics of the audit layer.
+.audit/
+
+# Local secrets and build output.
+.env
+.env.*
+coverage/
+*.tsbuildinfo

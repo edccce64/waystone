@@ -30,6 +30,8 @@ jobs:
       - run: npm run build
       - name: Run unit tests
         run: npm test
+      - name: Run the fork check suites
+        run: npm run test:checks
 
   unit-windows:
     name: unit (windows-latest)
@@ -46,3 +48,5 @@ jobs:
       - run: npm ci
       - name: Run unit tests
         run: npm test
+      - name: Run the fork check suites
+        run: npm run test:checks

@@ -6,6 +6,135 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `/dream`: consolidates long-term memory against the raw session evidence.
+  It collects the long-term entries, the daily logs and the session
+  transcripts, exports a compact digest of every session into `transcripts/`,
+  and asks the model for a concrete list of edits (`verify`, `fix`, `add`,
+  `forget`, `merge`, `wiki`). The list lands in `.audit/dream-result.json`;
+  `/dream apply` is the only step that writes to memory. Forgotten entries
+  still get a recovery record.
+- Knowledge index: `topics/<name>.md` and `wiki/<name>.md` hold the bodies,
+  and the injected context carries one line per file. `memory_read` lists or
+  reads them with the new `wiki`, `topics` and `transcripts` targets.
+  `memory_write` gained the `topic` and `wiki` targets.
+- Verification status: entries can be tagged `#已验证` / `#未验证` /
+  `#待验证` (also `#verified`, `#unverified`, `#pending`). The injected layer
+  puts explicitly unverified entries last. `/dream` records its verdicts in
+  `.audit/verified.json` and leaves the markdown untouched.
+- `PI_MEMORY_QMD_COLLECTION` names the qmd collection this extension
+  searches. It defaults to `pi-memory`, the upstream name, so an existing
+  setup keeps working. Change it when this extension runs next to another
+  one that uses the same collection.
+
+### Changed
+
+- Correction capture is on by default. A prompt that reads like a correction
+  is appended to today's daily log with the `#correction` tag and shown to the
+  model in the system prompt. Set `PI_MEMORY_CAPTURE_CORRECTIONS=off` to turn
+  it off.
+- The stale-path check is on by default. A memory entry that mentions a file
+  which no longer exists is annotated in the injected context. Set
+  `PI_MEMORY_STALE_CHECK=off` to turn it off.
+- The knowledge index is part of the injected context whenever `wiki/` or
+  `topics/` holds a file.
+- Entries that carry a verification tag are reordered, so the unverified ones
+  sink to the end of the injected block.
+
+### Fixed
+
+- The audit report tells the tiers apart. An entry in an older daily log, or a
+  scratchpad item that is already done, was counted as "never injected",
+  although the injection never reads those places. They are now listed as
+  "outside the injected part of memory".
+- The audit report has a new section, "cut off by the budget". A file that
+  was cut before it reached the model holds fragments, not entries. The
+  ledger now records which sources were cut, so the entries behind the cut
+  are not reported as dead weight.
+- A superseded entry is no longer reported as a ledger row without a file
+  entry. It is still on disk, only retired.
+- The knowledge index and the retrieved snippets are no longer counted as
+  ledger rows without a file entry.
+- The ledger, the supersede chain and the verification sidecar are re-read
+  when the file on disk changes. Another session's change is now visible
+  without a restart.
+- `/dream apply` writes nothing until every action has been processed. A
+  failure in the middle can no longer leave a wiki page written and the
+  long-term file untouched.
+- `/dream` collects its material in the background. Reading every session
+  file of the last days took longer than the command limit allows.
+- A session file is read up to 8 MB. A bigger file is read in part.
+- A wiki page or topic note cannot be named `con`, `nul`, `com1` and the
+  other names Windows refuses.
+- The verification sidecar is parsed once and kept in memory. Every
+  injection read the file again.
+- Every memory write now runs under a lock. Two sessions that write at the
+  same time used to overwrite each other, because each one read the file,
+  changed it and wrote it back.
+- `verified.json` and `supersedes.json` are written through a temporary file
+  and a rename. A crash in the middle of a write used to leave half a file,
+  which the reader silently treated as an empty state.
+- `/seed apply` no longer writes into the repository that happens to be open.
+  A project run belongs to the repository it was mined in, and the run is
+  refused elsewhere.
+- `/seed apply` refuses to run while the background extraction is still
+  running, and an applied run cannot be revived by a later batch.
+- The exported session digests and the audit reports are pruned. The digests
+  are search evidence, not an archive.
+- A wiki page or topic note cannot grow past 20 000 characters.
+- The verification sidecar now reaches the injected order. `/dream verify`
+  stored its verdict under the key of the whole stamped block, while the
+  injection looked it up under the key of the body, so the two never matched
+  and every entry kept its `pending` rank.
+- `/dream`'s `merge` action now merges. It only deleted the old entry and
+  ignored the `into` field, so the body of the old entry was lost. The old
+  body now moves into the target entry and the old entry is retired with a
+  recovery record.
+- `/audit reset` no longer deletes the whole `.audit` directory. It clears the
+  ledger and the generated reports and keeps the supersede chain, the
+  verification sidecar and the pending `/seed` and `/dream` results.
+- A correction that carries a credential is no longer captured. It used to be
+  injected into the system prompt and offered to the model as a memory to
+  write, while only the write to disk was blocked.
+- The session digests that `/dream` exports no longer contain lines with a
+  credential, and `/seed` no longer sends such prompts to the model. The
+  filtering now happens before the model call, as the README claims.
+- `/dream`'s `add`, `fix` and `wiki` actions refuse text that carries a
+  credential, and `add` only accepts a known category.
+- The project tier now counts towards the overall context budget. It used to
+  be injected on top of the full budget, so the injection could reach about
+  19 000 characters instead of 16 000.
+- qmd is now located through the known npm global prefixes
+  (`%APPDATA%\npm\node_modules` and friends) when the npm bin directory is not
+  on `PATH`. GUI-launched agents inherit a `PATH` that does not contain it,
+  which silently disabled `memory_search`, the automatic re-index and the
+  automatic embedding.
+- `qmd context add` now uses the virtual path form (`qmd://pi-memory/daily`).
+  A plain path is rejected unless it points at an indexed document, so the
+  daily logs never got a context description.
+- `QMD_EMBED_PARALLELISM=1` is set for every qmd call. On a 2 GB GPU the
+  embedding pool leaves no room for the reranker, and `qmd query` died with a
+  Vulkan allocation error.
+- `setupQmdCollection` no longer aborts when the collection already exists.
+  The path contexts are registered either way.
+- The audit check suite no longer depends on the calendar: the entry it
+  inspects is written to today's log.
+- The end-to-end suite runs on Windows. It piped the prompt through `base64`,
+  which the Windows shell does not provide, and its mock of the extension API
+  lacked `registerCommand`, so five cases failed before any test ran.
+- The qmd end-to-end check no longer reads the live memory. It uses a
+  throwaway collection, so a machine with real memories is not disturbed.
+- The live search check no longer hardcodes one machine's memory content. It
+  searches for `memory` by default, takes the word from
+  `PI_MEMORY_E2E_QUERY` and skips with `PI_MEMORY_E2E_QMD=0`.
+- The fork check suites run in CI on Linux and Windows. The one assertion that
+  depended on a Windows path separator was rewritten.
+- The end-to-end suite no longer leaves anything behind. It names the daily
+  files with the local date, the same way the extension does, turns the exit
+  summary of its own pi sessions off, and restores every daily log it
+  touched.
+
 ## [0.4.2] — 2026-08-10
 
 ### Added

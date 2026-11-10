@@ -20,7 +20,7 @@
  *   8. qmd no-results parsing (when qmd + collection are configured)
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import registerExtension, { _clearUpdateTimer } from "../index.js";
@@ -30,7 +30,9 @@ import registerExtension, { _clearUpdateTimer } from "../index.js";
 // ---------------------------------------------------------------------------
 
 const EXTENSION_PATH = path.resolve(import.meta.dirname ?? __dirname, "..", "index.ts");
-const MEMORY_DIR = path.join(process.env.HOME ?? "~", ".pi", "agent", "memory");
+// Windows does not always set HOME. USERPROFILE is the one that is there.
+const HOME_DIR = process.env.USERPROFILE ?? process.env.HOME ?? "~";
+const MEMORY_DIR = path.join(HOME_DIR, ".pi", "agent", "memory");
 const MEMORY_FILE = path.join(MEMORY_DIR, "MEMORY.md");
 const SCRATCHPAD_FILE = path.join(MEMORY_DIR, "SCRATCHPAD.md");
 const DAILY_DIR = path.join(MEMORY_DIR, "daily");
@@ -65,6 +67,9 @@ function registeredTools(): Record<string, any> {
 			if (typeof tool.name === "string") {
 				tools[tool.name] = tool;
 			}
+		},
+		registerCommand(_name: string, _options: unknown) {
+			// Commands are exercised by the CLI tests, not by direct tool calls.
 		},
 		on(_event: string, _handler: unknown) {
 			// Hooks are irrelevant for direct tool execution in these tests.
@@ -102,18 +107,48 @@ function toolResultText(result: any): string {
 	return (result.content ?? []).map((part: any) => (part.type === "text" ? part.text : "")).join("\n");
 }
 
+/**
+ * Locate the pi launcher script.
+ *
+ * The `pi` command is a shell shim. On Windows it is a `.cmd` file, which
+ * cannot be spawned without a shell, and the shell would need the prompt
+ * quoted. The shim directory also holds `pi-launcher.js`, which node can
+ * run directly with the prompt on stdin.
+ */
+function findPiLauncher(): string | null {
+	const finder = process.platform === "win32" ? "where" : "which";
+	try {
+		const out = execSync(`${finder} pi`, { encoding: "utf-8", timeout: 10_000 });
+		for (const line of out.split(/\r?\n/)) {
+			const candidate = line.trim();
+			if (!candidate) continue;
+			const launcher = path.join(path.dirname(candidate), "pi-launcher.js");
+			if (fs.existsSync(launcher)) return launcher;
+		}
+	} catch {
+		// Fall back to the plain command below.
+	}
+	return null;
+}
+
+const PI_LAUNCHER = findPiLauncher();
+
 /** Run pi in print+json mode with the extension loaded. */
 function runPi(prompt: string, opts?: { timeout?: number; textMode?: boolean }): PiResult {
 	const timeout = opts?.timeout ?? TIMEOUT_MS;
 	const mode = opts?.textMode ? "text" : "json";
 
-	// Escape the prompt for shell — use base64 encoding to avoid quoting issues
-	const promptB64 = Buffer.from(prompt).toString("base64");
-	const providerArg = PI_E2E_PROVIDER ? ` --provider "${PI_E2E_PROVIDER}"` : "";
-	const modelArg = PI_E2E_MODEL ? ` --model "${PI_E2E_MODEL}"` : "";
-	const cmd =
-		`echo "${promptB64}" | base64 -d | ` +
-		`pi -p --mode ${mode}${providerArg}${modelArg} --no-extensions -e "${EXTENSION_PATH}" --no-session`;
+	const args = [
+		"-p",
+		"--mode",
+		mode,
+		...(PI_E2E_PROVIDER ? ["--provider", PI_E2E_PROVIDER] : []),
+		...(PI_E2E_MODEL ? ["--model", PI_E2E_MODEL] : []),
+		"--no-extensions",
+		"-e",
+		EXTENSION_PATH,
+		"--no-session",
+	];
 
 	let stdout: string;
 	let stderr = "";
@@ -122,12 +157,26 @@ function runPi(prompt: string, opts?: { timeout?: number; textMode?: boolean }):
 	let exitCode = 0;
 
 	try {
-		stdout = execSync(cmd, {
-			timeout,
-			encoding: "utf-8",
-			maxBuffer: 10 * 1024 * 1024, // 10MB
-			stdio: ["pipe", "pipe", "pipe"],
-		});
+		// The prompt goes to pi on stdin, so no shell quoting is involved.
+		// The exit summary is off: the test runs its own pi sessions, and their
+		// summaries would land in the daily log of the machine.
+		const env = { ...process.env, PI_MEMORY_EXIT_SUMMARY: "0" };
+		stdout = PI_LAUNCHER
+			? execFileSync("node", [PI_LAUNCHER, ...args], {
+					timeout,
+					encoding: "utf-8",
+					maxBuffer: 10 * 1024 * 1024, // 10MB
+					input: prompt,
+					env,
+				})
+			: execSync(`pi -p --mode ${mode} --no-extensions -e "${EXTENSION_PATH}" --no-session`, {
+					timeout,
+					encoding: "utf-8",
+					maxBuffer: 10 * 1024 * 1024, // 10MB
+					stdio: ["pipe", "pipe", "pipe"],
+					input: prompt,
+					env,
+				});
 	} catch (err: any) {
 		stdout = err.stdout ?? "";
 		stderr = err.stderr ?? "";
@@ -197,9 +246,50 @@ function restoreFile(filePath: string) {
 	}
 }
 
+/**
+ * Back up every daily log, so a run that crosses midnight cannot leave a
+ * half-written file of the next day behind.
+ */
+function backupDailyDir(): string[] {
+	let names: string[] = [];
+	try {
+		names = fs.readdirSync(DAILY_DIR).filter((f) => f.endsWith(".md"));
+	} catch {
+		names = [];
+	}
+	for (const name of names) backupFile(path.join(DAILY_DIR, name));
+	return names;
+}
+
+/** Restore the daily logs and remove the ones the test created. */
+function restoreDailyDir(backedUp: string[]) {
+	let current: string[] = [];
+	try {
+		current = fs.readdirSync(DAILY_DIR).filter((f) => f.endsWith(".md"));
+	} catch {
+		current = [];
+	}
+	for (const name of current) {
+		if (backedUp.includes(name)) continue;
+		try {
+			fs.rmSync(path.join(DAILY_DIR, name), { force: true });
+		} catch {
+			// Nothing to remove.
+		}
+	}
+	for (const name of backedUp) restoreFile(path.join(DAILY_DIR, name));
+}
+
 /** Get today's date string. */
+/**
+ * The local date, the same way the extension names its daily files. The UTC
+ * date differs from it in the hours around midnight, which made the test
+ * look for the file of the wrong day.
+ */
 function todayStr(): string {
-	return new Date().toISOString().slice(0, 10);
+	const now = new Date();
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -352,11 +442,16 @@ async function testMemoryWriteAndRecall() {
 	assertPiExitedOk(recallResult, "pi (recall)");
 
 	const recallText = recallResult.textOutput.toLowerCase();
+	// The answer may come in any language: the agent is told to reply in the
+	// user's language, so both spellings are accepted.
 	assert(
-		recallText.includes("seattle"),
-		`Recall does not mention "seattle". Got: ${recallResult.textOutput.slice(0, 300)}`,
+		recallText.includes("seattle") || recallText.includes("西雅图"),
+		`Recall does not mention where the user lives. Got: ${recallResult.textOutput.slice(0, 300)}`,
 	);
-	assert(recallText.includes("tea"), `Recall does not mention "tea". Got: ${recallResult.textOutput.slice(0, 300)}`);
+	assert(
+		recallText.includes("tea") || recallText.includes("茶"),
+		`Recall does not mention the favorite drink. Got: ${recallResult.textOutput.slice(0, 300)}`,
+	);
 }
 
 async function testScratchpadCycle() {
@@ -388,21 +483,26 @@ async function testScratchpadCycle() {
 }
 
 async function testDailyLog() {
-	const today = todayStr();
-	const dailyFile = path.join(DAILY_DIR, `${today}.md`);
-
-	// Clean today's log
+	// The date is read again after the write: a run that crosses midnight
+	// writes into the next day's file.
 	fs.mkdirSync(DAILY_DIR, { recursive: true });
-	if (fs.existsSync(dailyFile)) fs.unlinkSync(dailyFile);
+	const before = todayStr();
 
 	await runTool("memory_write", {
 		target: "daily",
 		content: "Worked on pi-memory extension today",
 	});
 
+	const after = todayStr();
+	const dailyFile = path.join(DAILY_DIR, `${after}.md`);
 	assert(fs.existsSync(dailyFile), `Daily log file not created: ${dailyFile}`);
 	const content = fs.readFileSync(dailyFile, "utf-8");
 	assert(content.includes("pi-memory extension"), `Daily log missing text. Content: ${content.slice(0, 200)}`);
+	if (before !== after) {
+		// The run crossed midnight. The file that was there before must still
+		// be restored at the end.
+		console.log(`      (the run crossed midnight: ${before} → ${after})`);
+	}
 }
 
 async function testMemorySearchGraceful() {
@@ -580,9 +680,7 @@ async function main() {
 	console.log("Backing up existing memory files ...\n");
 	backupFile(MEMORY_FILE);
 	backupFile(SCRATCHPAD_FILE);
-	const today = todayStr();
-	const dailyFile = path.join(DAILY_DIR, `${today}.md`);
-	backupFile(dailyFile);
+	const backedUpDaily = backupDailyDir();
 
 	try {
 		console.log("\x1b[1m1. Extension loading\x1b[0m");
@@ -631,7 +729,7 @@ async function main() {
 		console.log("\nRestoring memory files ...");
 		restoreFile(MEMORY_FILE);
 		restoreFile(SCRATCHPAD_FILE);
-		restoreFile(dailyFile);
+		restoreDailyDir(backedUpDaily);
 	}
 
 	// Summary
