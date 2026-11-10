@@ -329,6 +329,10 @@ pass that revisits raw transcripts, corrects notes that no longer match the
 evidence, merges duplicates, and keeps a wiki in shape. `/dream` implements the
 same idea, conservatively.
 
+`/dream` is experimental: it is only registered when `PI_MEMORY_EXPERIMENTAL`
+is `on` (`1` / `true` also work). Without it, `/dream` does not exist and the
+other three commands are unaffected.
+
 ```bash
 /dream            # collect evidence, ask the model for edits (runs in background)
 /dream 30         # look back 30 days

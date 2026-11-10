@@ -516,7 +516,16 @@ function writeAuditReport(markdown: string): string {
 	return file;
 }
 
-/** /audit, /seed, /dream and /supersede. */
+/**
+ * Experimental commands, off unless the user opts in. Same parsing as the other
+ * switches: trim, lowercase, and only on/1/true count.
+ */
+function experimentalEnabled(): boolean {
+	const value = (process.env.PI_MEMORY_EXPERIMENTAL ?? "").trim().toLowerCase();
+	return value === "on" || value === "1" || value === "true";
+}
+
+/** /audit, /seed and /supersede, plus /dream when experimental commands are on. */
 export function registerCommands(pi: ExtensionAPI) {
 	pi.registerCommand("audit", {
 		description:
@@ -549,13 +558,16 @@ export function registerCommands(pi: ExtensionAPI) {
 	});
 
 	// --- /dream: consolidate memory against the raw session evidence ---
-	pi.registerCommand("dream", {
-		description:
-			"Consolidate memory against raw session transcripts: verify notes, fix wrong ones, merge duplicates, build wiki pages (runs in the background). Usage: /dream [days] | /dream apply | /dream status",
-		handler: async (args, ctx) => {
-			await runDream(args ?? "", ctx);
-		},
-	});
+	// Experimental: the command is only registered when the user opts in.
+	if (experimentalEnabled()) {
+		pi.registerCommand("dream", {
+			description:
+				"Consolidate memory against raw session transcripts: verify notes, fix wrong ones, merge duplicates, build wiki pages (runs in the background). Usage: /dream [days] | /dream apply | /dream status",
+			handler: async (args, ctx) => {
+				await runDream(args ?? "", ctx);
+			},
+		});
+	}
 
 	// --- /supersede: retire a memory a newer one replaces ---
 	pi.registerCommand("supersede", {

@@ -33,6 +33,11 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `/dream` is experimental. The command is only registered when
+  `PI_MEMORY_EXPERIMENTAL` is `on` (`1` and `true` also work); without it the
+  extension registers `/audit`, `/seed` and `/supersede`. The `/dream` code and
+  its background run are unchanged, and the command appears as soon as the
+  switch is set.
 - The extension is split across five modules: `memory-core.ts` (paths, files,
   locks, sidecars, verification, context assembly), `search.ts` (qmd),
   `maintenance.ts` (audit, supersede, `/seed`, `/dream`, lifecycle hooks),

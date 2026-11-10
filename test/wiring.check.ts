@@ -75,6 +75,36 @@ await check("registers the /seed and /supersede commands", () => {
 	}
 });
 
+/** Register the extension against a throwaway stub and return its commands. */
+function commandsFromFreshRegistration() {
+	const registered = new Map<string, { description?: string; handler: Handler }>();
+	const stub = {
+		on: () => () => {},
+		registerTool: () => {},
+		registerCommand: (name: string, options: { description?: string; handler: Handler }) => {
+			registered.set(name, options);
+		},
+	};
+	factory(stub as unknown as Parameters<typeof factory>[0]);
+	return registered;
+}
+
+await check("registers three commands by default", () => {
+	const registered = commandsFromFreshRegistration();
+	assert.deepEqual([...registered.keys()].sort(), ["audit", "seed", "supersede"]);
+});
+
+await check("registers /dream only with PI_MEMORY_EXPERIMENTAL", () => {
+	process.env.PI_MEMORY_EXPERIMENTAL = "on";
+	try {
+		const registered = commandsFromFreshRegistration();
+		assert.deepEqual([...registered.keys()].sort(), ["audit", "dream", "seed", "supersede"]);
+		assert.ok((registered.get("dream")?.description ?? "").length > 10, "/dream needs a description");
+	} finally {
+		delete process.env.PI_MEMORY_EXPERIMENTAL;
+	}
+});
+
 await check("keeps every upstream memory tool", () => {
 	for (const tool of [
 		"memory_write",
